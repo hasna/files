@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dashboard/dist/
+*.db
+*.db-shm
+*.db-wal
+.env
+.secrets/
+bun.lock

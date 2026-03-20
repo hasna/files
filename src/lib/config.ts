@@ -1,0 +1,58 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
+const DATA_DIR = process.env.FILES_DATA_DIR ?? join(homedir(), ".files");
+const CONFIG_PATH = join(DATA_DIR, "config.json");
+
+export interface FilesConfig {
+  auto_watch: boolean;
+  hash_skip_bytes: number;        // skip hashing files larger than this (0 = always hash)
+  default_limit: number;
+  ignore_patterns: string[];      // global ignore patterns applied to all local sources
+  [key: string]: unknown;
+}
+
+const DEFAULTS: FilesConfig = {
+  auto_watch: false,
+  hash_skip_bytes: 0,
+  default_limit: 50,
+  ignore_patterns: [],
+};
+
+export function loadConfig(): FilesConfig {
+  if (!existsSync(CONFIG_PATH)) return { ...DEFAULTS };
+  try {
+    return { ...DEFAULTS, ...(JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<FilesConfig>) };
+  } catch {
+    return { ...DEFAULTS };
+  }
+}
+
+export function saveConfig(cfg: FilesConfig): void {
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
+}
+
+export function getConfigValue(key: keyof FilesConfig): unknown {
+  return loadConfig()[key];
+}
+
+export function setConfigValue(key: string, value: string): void {
+  const cfg = loadConfig();
+  const k = key as keyof FilesConfig;
+  if (!(k in DEFAULTS)) throw new Error(`Unknown config key: ${key}`);
+  const current = DEFAULTS[k];
+  if (typeof current === "boolean") {
+    cfg[k] = value === "true" || value === "1";
+  } else if (typeof current === "number") {
+    cfg[k] = Number(value);
+  } else if (Array.isArray(current)) {
+    cfg[k] = value.split(",").map((s) => s.trim()).filter(Boolean);
+  } else {
+    cfg[k] = value;
+  }
+  saveConfig(cfg);
+}
+
+export const CONFIG_PATH_EXPORT = CONFIG_PATH;
