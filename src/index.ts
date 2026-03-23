@@ -1,5 +1,8 @@
 // DB layer
 export { getDb, DB_PATH } from "./db/database.js";
+
+// DB — PostgreSQL migrations
+export { PG_MIGRATIONS } from "./db/pg-migrations.js";
 export { getCurrentMachine, listMachines, getMachine, upsertMachine } from "./db/machines.js";
 export { createSource, getSource, listSources, updateSource, deleteSource, markSourceIndexed } from "./db/sources.js";
 export { upsertFile, getFile, listFiles, searchFiles as searchFilesDb, markFileDeleted, deleteFile, getFileByPath, refreshAllFts } from "./db/files.js";
