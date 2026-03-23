@@ -1,12 +1,28 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
-import { mkdirSync } from "fs";
+import { mkdirSync, existsSync, cpSync } from "fs";
 import { homedir } from "os";
 
-const DATA_DIR = process.env.FILES_DATA_DIR ?? join(homedir(), ".files");
+function resolveDataDir(): string {
+  const explicit = process.env.HASNA_FILES_DATA_DIR ?? process.env.FILES_DATA_DIR;
+  if (explicit) return explicit;
+
+  const newDir = join(homedir(), ".hasna", "files");
+  const oldDir = join(homedir(), ".files");
+
+  // Auto-migrate: copy old data to new location if needed
+  if (!existsSync(newDir) && existsSync(oldDir)) {
+    mkdirSync(join(homedir(), ".hasna"), { recursive: true });
+    cpSync(oldDir, newDir, { recursive: true });
+  }
+
+  return newDir;
+}
+
+const DATA_DIR = resolveDataDir();
 mkdirSync(DATA_DIR, { recursive: true });
 
-export const DB_PATH = process.env.FILES_DB_PATH ?? join(DATA_DIR, "files.db");
+export const DB_PATH = process.env.HASNA_FILES_DB_PATH ?? process.env.FILES_DB_PATH ?? join(DATA_DIR, "files.db");
 
 let _db: Database | null = null;
 

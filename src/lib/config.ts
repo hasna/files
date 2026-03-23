@@ -1,8 +1,24 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-const DATA_DIR = process.env.FILES_DATA_DIR ?? join(homedir(), ".files");
+function resolveDataDir(): string {
+  const explicit = process.env.HASNA_FILES_DATA_DIR ?? process.env.FILES_DATA_DIR;
+  if (explicit) return explicit;
+
+  const newDir = join(homedir(), ".hasna", "files");
+  const oldDir = join(homedir(), ".files");
+
+  // Auto-migrate: copy old data to new location if needed
+  if (!existsSync(newDir) && existsSync(oldDir)) {
+    mkdirSync(join(homedir(), ".hasna"), { recursive: true });
+    cpSync(oldDir, newDir, { recursive: true });
+  }
+
+  return newDir;
+}
+
+const DATA_DIR = resolveDataDir();
 const CONFIG_PATH = join(DATA_DIR, "config.json");
 
 export interface FilesConfig {
