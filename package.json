@@ -1,7 +1,7 @@
 {
   "name": "@hasna/files",
-  "version": "0.1.4",
-  "description": "Agent-first file management — index local folders and S3 buckets, tag, search, and retrieve files via CLI + MCP",
+  "version": "0.1.5",
+  "description": "Agent-first file management \u2014 index local folders and S3 buckets, tag, search, and retrieve files via CLI + MCP",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,7 +33,8 @@
     "test": "bun test",
     "dev:cli": "bun run src/cli/index.tsx",
     "dev:mcp": "bun run src/mcp/index.ts",
-    "dev:serve": "bun run src/server/index.ts"
+    "dev:serve": "bun run src/server/index.ts",
+    "postinstall": "mkdir -p $HOME/.hasna/files 2>/dev/null || true"
   },
   "keywords": [
     "files",
