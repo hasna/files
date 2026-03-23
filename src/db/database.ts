@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { join } from "path";
 import { mkdirSync, existsSync, cpSync } from "fs";
 import { homedir } from "os";
@@ -33,6 +33,15 @@ export function getDb(): Database {
   _db.exec("PRAGMA foreign_keys=ON");
   _db.exec("PRAGMA synchronous=NORMAL");
   migrate(_db);
+  _db.exec(`CREATE TABLE IF NOT EXISTS feedback (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    message TEXT NOT NULL,
+    email TEXT,
+    category TEXT DEFAULT 'general',
+    version TEXT,
+    machine_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
   return _db;
 }
 
