@@ -1,6 +1,6 @@
 {
   "name": "@hasna/files",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Agent-first file management \u2014 index local folders and S3 buckets, tag, search, and retrieve files via CLI + MCP",
   "type": "module",
   "main": "dist/index.js",
@@ -23,11 +23,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "cd dashboard && bun run build && cd .. && bun build src/cli/index.tsx --outdir dist/cli --target bun --external ink --external react --external chalk --external @modelcontextprotocol/sdk && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/server/index.ts --outdir dist/server --target bun && bun build src/index.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
+    "build": "cd dashboard && bun run build && cd .. && bun build src/cli/index.tsx --outdir dist/cli --target bun --external ink --external react --external chalk --external @modelcontextprotocol/sdk && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/server/index.ts --outdir dist/server --target bun && bun build src/index.ts --outdir dist --target bun && cp src/types/index.ts dist/index.d.ts",
     "build:cli": "bun build src/cli/index.tsx --outdir dist/cli --target bun --external ink --external react --external chalk --external @modelcontextprotocol/sdk",
     "build:mcp": "bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk",
     "build:server": "bun build src/server/index.ts --outdir dist/server --target bun",
-    "build:lib": "bun build src/index.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
+    "build:lib": "bun build src/index.ts --outdir dist --target bun && cp src/types/index.ts dist/index.d.ts",
     "build:dashboard": "cd dashboard && bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
