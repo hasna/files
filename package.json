@@ -1,6 +1,6 @@
 {
   "name": "@hasna/files",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent-first file management — index local folders and S3 buckets, tag, search, and retrieve files via CLI + MCP",
   "type": "module",
   "main": "dist/index.js",
@@ -49,7 +49,7 @@
     "dashboard"
   ],
   "author": "hasna",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public"
