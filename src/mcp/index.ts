@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { registerCloudTools } from "@hasna/cloud";
 import { z } from "zod";
 import { getCurrentMachine, listMachines } from "../db/machines.js";
 import { createSource, listSources, getSource, deleteSource } from "../db/sources.js";
@@ -442,4 +443,5 @@ for (const source of allSources) {
 }
 
 const transport = new StdioServerTransport();
+registerCloudTools(server, "files");
 await server.connect(transport);
