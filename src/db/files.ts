@@ -97,6 +97,7 @@ export function listFiles(opts: ListFilesOptions = {}): FileWithTags[] {
 
   if (opts.source_id) { conditions.push("f.source_id = ?"); params.push(opts.source_id); }
   if (opts.machine_id) { conditions.push("f.machine_id = ?"); params.push(opts.machine_id); }
+  if (opts.sync_status) { conditions.push("f.sync_status = ?"); params.push(opts.sync_status); }
   if (opts.ext) { conditions.push("f.ext = ?"); params.push(opts.ext.startsWith(".") ? opts.ext : `.${opts.ext}`); }
   if (opts.status) { conditions[0] = `f.status = ?`; params.unshift(opts.status); }
   if (opts.after) { conditions.push("COALESCE(f.modified_at, f.indexed_at) >= ?"); params.push(opts.after); }

@@ -5,11 +5,11 @@ import { registerCloudTools } from "@hasna/cloud";
 import { z } from "zod";
 import { getCurrentMachine, listMachines } from "../db/machines.js";
 import { createSource, listSources, getSource, deleteSource } from "../db/sources.js";
-import { listFiles, getFile, annotateFile } from "../db/files.js";
+import { listFiles, getFile, getFileByPath, annotateFile } from "../db/files.js";
 import { searchFiles } from "../db/search.js";
-import { tagFile, untagFile, listTags } from "../db/tags.js";
-import { createCollection, updateCollection, listCollections, getCollection, addToCollection, removeFromCollection, autoPopulateCollection } from "../db/collections.js";
-import { createProject, updateProject, listProjects, getProject, addToProject, removeFromProject } from "../db/projects.js";
+import { tagFile, untagFile, listTags, deleteTag } from "../db/tags.js";
+import { createCollection, updateCollection, listCollections, getCollection, deleteCollection, addToCollection, removeFromCollection, autoPopulateCollection } from "../db/collections.js";
+import { createProject, updateProject, listProjects, getProject, deleteProject, addToProject, removeFromProject } from "../db/projects.js";
 import { indexLocalSource } from "../lib/indexer.js";
 import { indexS3Source, downloadFromS3, uploadToS3, getPresignedUrl } from "../lib/s3.js";
 import { registerAgent, getAgent, listAgents as listDbAgents, updateAgentHeartbeat, setAgentFocus } from "../db/agents.js";
@@ -110,6 +110,7 @@ server.tool("list_files", "List indexed files with optional filters. If agent_id
   sort_dir: z.enum(["asc", "desc"]).optional().default("desc"),
   limit: z.number().optional().default(50),
   offset: z.number().optional().default(0),
+  sync_status: z.enum(["local_only", "synced", "conflict"]).optional().describe("Filter by sync status"),
   agent_id: z.string().optional().describe("Agent ID — auto-applies focused project filter if set"),
 }, async (opts) => {
   // Workspace scoping: auto-apply agent's focused project
@@ -212,6 +213,13 @@ server.tool("untag_file", "Remove tags from a file", {
   return { content: [{ type: "text", text: "Tags removed" }] };
 });
 
+server.tool("delete_tag", "Delete a tag entirely (removes from all files)", {
+  id: z.string().describe("Tag ID"),
+}, async ({ id }) => {
+  const ok = deleteTag(id);
+  return { content: [{ type: "text", text: ok ? `Tag ${id} deleted` : `Tag not found: ${id}` }] };
+});
+
 // ─── Collections ──────────────────────────────────────────────────────────────
 
 server.tool("list_collections", "List all collections", {
@@ -283,6 +291,13 @@ server.tool("remove_from_collection", "Remove a file from a collection", {
   return { content: [{ type: "text", text: "Removed from collection" }] };
 });
 
+server.tool("delete_collection", "Delete a collection (does not delete files, only the collection)", {
+  id: z.string().describe("Collection ID"),
+}, async ({ id }) => {
+  const ok = deleteCollection(id);
+  return { content: [{ type: "text", text: ok ? `Collection ${id} deleted` : `Collection not found: ${id}` }] };
+});
+
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
 server.tool("list_projects", "List all projects", {
@@ -335,6 +350,13 @@ server.tool("remove_from_project", "Remove a file from a project", {
   return { content: [{ type: "text", text: "Removed from project" }] };
 });
 
+server.tool("delete_project", "Delete a project (does not delete files, only the project)", {
+  id: z.string().describe("Project ID"),
+}, async ({ id }) => {
+  const ok = deleteProject(id);
+  return { content: [{ type: "text", text: ok ? `Project ${id} deleted` : `Project not found: ${id}` }] };
+});
+
 // ─── Machines ─────────────────────────────────────────────────────────────────
 
 server.tool("list_machines", "List all known machines that have indexed files", {}, async () => {
@@ -358,7 +380,7 @@ server.tool("get_file_url", "Get a pre-signed URL for temporary access to an S3 
 
 // ─── get_file_content ─────────────────────────────────────────────────────────
 
-server.tool("get_file_content", "Read the content of a text file (local sources only, max 1MB)", {
+server.tool("get_file_content", "Read the content of a text file (local or S3 sources, max 1MB)", {
   id: z.string().describe("File ID"),
   max_bytes: z.number().optional().default(102400).describe("Max bytes to read (default 100KB)"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -367,22 +389,50 @@ server.tool("get_file_content", "Read the content of a text file (local sources 
   if (!file) return { content: [{ type: "text", text: `File not found: ${id}` }], isError: true };
   const source = getSource(file.source_id);
   if (!source) return { content: [{ type: "text", text: "Source not found" }], isError: true };
-  if (source.type !== "local") return { content: [{ type: "text", text: "get_file_content only works with local sources" }], isError: true };
 
-  const fullPath = join(source.path!, file.path);
-  const { readFileSync } = await import("fs");
-  try {
-    const buf = readFileSync(fullPath);
-    const slice = buf.slice(0, max_bytes ?? 102400);
-    const text = slice.toString("utf8");
-    const truncated = buf.length > (max_bytes ?? 102400);
-    if (agent_id) logActivity({ agent_id, action: "read", file_id: id, metadata: { bytes_read: slice.length, truncated } });
-    return {
-      content: [{ type: "text", text: truncated ? `${text}\n\n[truncated — ${buf.length} bytes total, showing first ${max_bytes} bytes]` : text }],
-    };
-  } catch (e) {
-    return { content: [{ type: "text", text: `Failed to read file: ${(e as Error).message}` }], isError: true };
+  const limit = max_bytes ?? 102400;
+  let buf: Buffer;
+
+  if (source.type === "local") {
+    const fullPath = join(source.path!, file.path);
+    const { readFileSync } = await import("fs");
+    try {
+      buf = readFileSync(fullPath);
+    } catch (e) {
+      return { content: [{ type: "text", text: `Failed to read file: ${(e as Error).message}` }], isError: true };
+    }
+  } else if (source.type === "s3") {
+    try {
+      const { GetObjectCommand, S3Client } = await import("@aws-sdk/client-s3");
+      const cfg = source.config;
+      const client = new S3Client({
+        region: source.region ?? "us-east-1",
+        ...(cfg.endpoint ? { endpoint: cfg.endpoint } : {}),
+        ...(cfg.accessKeyId ? { credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey!, sessionToken: cfg.sessionToken } } : {}),
+      });
+      const resp = await client.send(new GetObjectCommand({
+        Bucket: source.bucket!,
+        Key: file.path,
+        Range: `bytes=0-${limit - 1}`,
+      }));
+      if (!resp.Body) return { content: [{ type: "text", text: "Empty response from S3" }], isError: true };
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of resp.Body as AsyncIterable<Uint8Array>) { chunks.push(chunk); }
+      buf = Buffer.concat(chunks);
+    } catch (e) {
+      return { content: [{ type: "text", text: `Failed to read S3 file: ${(e as Error).message}` }], isError: true };
+    }
+  } else {
+    return { content: [{ type: "text", text: `Unsupported source type: ${source.type}` }], isError: true };
   }
+
+  const slice = buf.slice(0, limit);
+  const text = slice.toString("utf8");
+  const truncated = buf.length > limit;
+  if (agent_id) logActivity({ agent_id, action: "read", file_id: id, metadata: { bytes_read: slice.length, truncated } });
+  return {
+    content: [{ type: "text", text: truncated ? `${text}\n\n[truncated — ${buf.length} bytes total, showing first ${limit} bytes]` : text }],
+  };
 });
 
 // ─── bulk_tag ─────────────────────────────────────────────────────────────────
@@ -836,6 +886,125 @@ server.tool("bulk_import", "Import multiple files at once from URLs or local pat
   return { content: [{ type: "text" as const, text: JSON.stringify({ imported, failed, errors }, null, 2) }] };
 });
 
+// ─── QOL Tools ───────────────────────────────────────────────────────────────
+
+server.tool("resolve_id", "Resolve a partial ID to a full ID (prefix matching)", {
+  partial: z.string().describe("Partial ID (e.g. 'f_abc' or 'col_x')"),
+  type: z.enum(["files", "sources", "collections", "projects", "tags", "machines"]).describe("Entity type"),
+}, async ({ partial, type }) => {
+  const { resolveId } = await import("../db/resolve.js");
+  try {
+    const id = resolveId(partial, type);
+    if (!id) return { content: [{ type: "text" as const, text: `No ${type.slice(0, -1)} found matching "${partial}"` }], isError: true };
+    return { content: [{ type: "text" as const, text: id }] };
+  } catch (e) {
+    return { content: [{ type: "text" as const, text: (e as Error).message }], isError: true };
+  }
+});
+
+server.tool("get_file_by_path", "Look up a file by its path within a source", {
+  source_id: z.string().describe("Source ID"),
+  path: z.string().describe("File path relative to source root"),
+}, async ({ source_id, path }) => {
+  const file = getFileByPath(source_id, path);
+  if (!file) return { content: [{ type: "text" as const, text: `File not found: ${path} in source ${source_id}` }], isError: true };
+  const full = getFile(file.id);
+  return { content: [{ type: "text" as const, text: JSON.stringify(full, null, 2) }] };
+});
+
+server.tool("recent_files", "Get files recently touched by agents (read, upload, tag, annotate, etc.)", {
+  agent_id: z.string().optional().describe("Filter by agent ID (omit for all agents)"),
+  limit: z.number().optional().default(20),
+}, async ({ agent_id, limit }) => {
+  const { getDb: getRecentDb } = await import("../db/database.js");
+  const db = getRecentDb();
+  const lim = limit ?? 20;
+  const query = agent_id
+    ? "SELECT DISTINCT file_id, MAX(created_at) as last_touched FROM agent_activity WHERE file_id IS NOT NULL AND agent_id = ? GROUP BY file_id ORDER BY last_touched DESC LIMIT ?"
+    : "SELECT DISTINCT file_id, MAX(created_at) as last_touched FROM agent_activity WHERE file_id IS NOT NULL GROUP BY file_id ORDER BY last_touched DESC LIMIT ?";
+  const params = agent_id ? [agent_id, lim] : [lim];
+  const rows = (db.query(query) as any).all(params) as { file_id: string; last_touched: string }[];
+  const files = rows.map(r => { const f = getFile(r.file_id); return f ? { ...f, last_touched: r.last_touched } : null; }).filter(Boolean);
+  return { content: [{ type: "text" as const, text: JSON.stringify(files, null, 2) }] };
+});
+
+server.tool("list_deleted_files", "List soft-deleted files (trash)", {
+  source_id: z.string().optional(),
+  limit: z.number().optional().default(50),
+  offset: z.number().optional().default(0),
+}, async ({ source_id, limit, offset }) => {
+  const files = listFiles({ source_id, status: "deleted", limit, offset });
+  return { content: [{ type: "text" as const, text: JSON.stringify(files, null, 2) }] };
+});
+
+server.tool("list_conflicts", "List files with sync conflicts", {
+  source_id: z.string().optional(),
+  limit: z.number().optional().default(50),
+}, async ({ source_id, limit }) => {
+  const { getDb: getConflictDb } = await import("../db/database.js");
+  const db = getConflictDb();
+  const lim = limit ?? 50;
+  const query = source_id
+    ? "SELECT * FROM files WHERE sync_status = 'conflict' AND source_id = ? LIMIT ?"
+    : "SELECT * FROM files WHERE sync_status = 'conflict' LIMIT ?";
+  const params = source_id ? [source_id, lim] : [lim];
+  const rows = (db.query(query) as any).all(params);
+  return { content: [{ type: "text" as const, text: JSON.stringify(rows, null, 2) }] };
+});
+
+server.tool("resolve_conflict", "Resolve a sync conflict by picking a side", {
+  file_id: z.string().describe("File ID with conflict"),
+  resolution: z.enum(["keep_local", "keep_remote", "mark_resolved"]).describe("How to resolve"),
+}, async ({ file_id, resolution }) => {
+  const { getDb: getResDb } = await import("../db/database.js");
+  getResDb().run("UPDATE files SET sync_status = 'synced', sync_version = sync_version + 1 WHERE id = ?", [file_id]);
+  return { content: [{ type: "text" as const, text: `Conflict resolved for ${file_id} (${resolution})` }] };
+});
+
+server.tool("purge_deleted", "Permanently remove soft-deleted files from the database", {
+  source_id: z.string().optional().describe("Limit to a specific source"),
+  older_than: z.string().optional().describe("Only purge files deleted before this date (ISO 8601)"),
+}, async ({ source_id, older_than }) => {
+  const { getDb: getPurgeDb } = await import("../db/database.js");
+  const db = getPurgeDb();
+  const conditions = ["status = 'deleted'"];
+  const params: unknown[] = [];
+  if (source_id) { conditions.push("source_id = ?"); params.push(source_id); }
+  if (older_than) { conditions.push("indexed_at <= ?"); params.push(older_than); }
+  const result = db.run(`DELETE FROM files WHERE ${conditions.join(" AND ")}`, params);
+  return { content: [{ type: "text" as const, text: `Purged ${result.changes} deleted file(s)` }] };
+});
+
+server.tool("get_or_create_collection", "Find a collection by name, or create it if it doesn't exist", {
+  name: z.string(),
+  description: z.string().optional().default(""),
+}, async ({ name, description }) => {
+  const { getDb: getGocDb } = await import("../db/database.js");
+  const db = getGocDb();
+  const existing = db.query<{ id: string }, [string]>("SELECT id FROM collections WHERE name = ?").get(name);
+  if (existing) {
+    const c = getCollection(existing.id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(c, null, 2) }] };
+  }
+  const c = createCollection(name, description);
+  return { content: [{ type: "text" as const, text: JSON.stringify(c, null, 2) }] };
+});
+
+server.tool("get_or_create_project", "Find a project by name, or create it if it doesn't exist", {
+  name: z.string(),
+  description: z.string().optional().default(""),
+}, async ({ name, description }) => {
+  const { getDb: getGopDb } = await import("../db/database.js");
+  const db = getGopDb();
+  const existing = db.query<{ id: string }, [string]>("SELECT id FROM projects WHERE name = ?").get(name);
+  if (existing) {
+    const p = getProject(existing.id);
+    return { content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }] };
+  }
+  const p = createProject(name, description);
+  return { content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }] };
+});
+
 // ─── Feedback ────────────────────────────────────────────────────────────────
 
 server.tool(
@@ -890,6 +1059,28 @@ server.tool("set_focus", "Set active project context for this agent session.", {
 
 server.tool("list_agents", "List all registered agents.", {}, async () => {
   return { content: [{ type: "text" as const, text: JSON.stringify(listDbAgents()) }] };
+});
+
+// ─── Watcher ──────────────────────────────────────────────────────────────────
+
+server.tool("watch_source", "Start watching a local source for file changes (real-time indexing)", {
+  source_id: z.string().describe("Source ID (must be a local source)"),
+}, async ({ source_id }) => {
+  const source = getSource(source_id);
+  if (!source) return { content: [{ type: "text" as const, text: `Source not found: ${source_id}` }], isError: true };
+  if (source.type !== "local") return { content: [{ type: "text" as const, text: "watch_source only works with local sources" }], isError: true };
+  const { watchSource } = await import("../lib/watcher.js");
+  const machine = getCurrentMachine();
+  watchSource(source, machine.id);
+  return { content: [{ type: "text" as const, text: `Watching ${source.name} (${source.path})` }] };
+});
+
+server.tool("unwatch_source", "Stop watching a source for file changes", {
+  source_id: z.string().describe("Source ID"),
+}, async ({ source_id }) => {
+  const { unwatchSource } = await import("../lib/watcher.js");
+  unwatchSource(source_id);
+  return { content: [{ type: "text" as const, text: `Stopped watching source ${source_id}` }] };
 });
 
 // ─── Activity ─────────────────────────────────────────────────────────────────

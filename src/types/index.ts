@@ -102,6 +102,8 @@ export interface SearchResult extends FileWithTags {
   rank?: number;
 }
 
+export type SyncStatus = "local_only" | "synced" | "conflict";
+
 export interface ListFilesOptions {
   source_id?: string;
   machine_id?: string;
@@ -110,6 +112,7 @@ export interface ListFilesOptions {
   project_id?: string;
   ext?: string;
   status?: FileStatus;
+  sync_status?: SyncStatus;
   limit?: number;
   offset?: number;
   query?: string;
