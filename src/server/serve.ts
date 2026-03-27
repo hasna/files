@@ -1,6 +1,6 @@
 import { getCurrentMachine, listMachines } from "../db/machines.js";
 import { createSource, listSources, getSource, deleteSource } from "../db/sources.js";
-import { listFiles, getFile } from "../db/files.js";
+import { listFiles, getFile, getFilesSince } from "../db/files.js";
 import { searchFiles } from "../db/search.js";
 import { tagFile, untagFile, listTags } from "../db/tags.js";
 import { createCollection, listCollections, addToCollection, removeFromCollection } from "../db/collections.js";
@@ -86,6 +86,11 @@ export function startServer(port: number): void {
           offset: parseInt(url.searchParams.get("offset") ?? "0"),
         };
         const q = url.searchParams.get("q");
+        const sinceVersion = url.searchParams.get("since_version");
+        if (sinceVersion) {
+          const files = getFilesSince(parseInt(sinceVersion), opts.limit, opts.offset);
+          return json(files);
+        }
         const files = q ? searchFiles(q, opts) : listFiles(opts);
         return json(files);
       }
@@ -177,8 +182,40 @@ export function startServer(port: number): void {
         return json(results);
       }
 
+      // ── Agents ──────────────────────────────────────────────────────────
+      if (path === "/agents" && method === "GET") {
+        const { listAgents: listDbAgents } = await import("../db/agents.js");
+        return json(listDbAgents());
+      }
+      if (path.match(/^\/agents\/[^/]+\/activity$/) && method === "GET") {
+        const agentId = path.split("/")[2]!;
+        const { getAgentActivity } = await import("../db/activity.js");
+        const limit = parseInt(url.searchParams.get("limit") ?? "50");
+        const offset = parseInt(url.searchParams.get("offset") ?? "0");
+        return json(getAgentActivity(agentId, { limit, offset }));
+      }
+
+      // ── File History ───────────────────────────────────────────────────
+      if (path.match(/^\/files\/[^/]+\/history$/) && method === "GET") {
+        const fileId = path.split("/")[2]!;
+        const { getFileHistory } = await import("../db/activity.js");
+        const limit = parseInt(url.searchParams.get("limit") ?? "50");
+        const offset = parseInt(url.searchParams.get("offset") ?? "0");
+        return json(getFileHistory(fileId, { limit, offset }));
+      }
+
+      // ── Stats ──────────────────────────────────────────────────────────
+      if (path === "/stats" && method === "GET") {
+        const { getDb: getStatsDb } = await import("../db/database.js");
+        const db = getStatsDb();
+        const totals = db.query<any, []>("SELECT COUNT(*) as total_files, COALESCE(SUM(size), 0) as total_size FROM files WHERE status='active'").get()!;
+        const by_ext = db.query<any, []>("SELECT ext, COUNT(*) as count FROM files WHERE status='active' GROUP BY ext ORDER BY count DESC LIMIT 20").all();
+        const by_source = db.query<any, []>("SELECT f.source_id, s.name, COUNT(*) as count FROM files f JOIN sources s ON s.id=f.source_id WHERE f.status='active' GROUP BY f.source_id ORDER BY count DESC").all();
+        return json({ ...totals, by_ext, by_source });
+      }
+
       // ── Health ────────────────────────────────────────────────────────────
-      if (path === "/health") return json({ ok: true, version: "0.1.0" });
+      if (path === "/health") return json({ ok: true, version: "0.2.0" });
 
       return err("Not found", 404);
     },

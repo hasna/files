@@ -42,9 +42,12 @@ export interface FileRecord {
   machine_id: string;
   path: string;
   name: string;
+  original_name?: string;
+  canonical_name?: string;
   ext: string;
   size: number;
   mime: string;
+  description?: string;
   hash?: string;
   status: FileStatus;
   indexed_at: string;
@@ -63,18 +66,32 @@ export interface Tag {
   created_at: string;
 }
 
+export interface AutoRules {
+  ext?: string[];
+  tags?: string[];
+  name_pattern?: string;
+  source_id?: string;
+}
+
 export interface Collection {
   id: string;
   name: string;
   description: string;
+  parent_id?: string;
+  auto_rules?: AutoRules;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
+
+export type ProjectStatus = "active" | "archived" | "completed";
 
 export interface Project {
   id: string;
   name: string;
   description: string;
+  status?: ProjectStatus;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -102,6 +119,31 @@ export interface ListFilesOptions {
   max_size?: number;    // bytes
   sort?: "name" | "size" | "date";
   sort_dir?: "asc" | "desc";
+}
+
+export type ActionType =
+  | "upload" | "download" | "tag" | "untag" | "move"
+  | "delete" | "read" | "create" | "index" | "search"
+  | "annotate" | "import" | "copy" | "rename" | "restore";
+
+export interface Agent {
+  id: string;
+  name: string;
+  session_id?: string;
+  project_id?: string;
+  last_seen_at: string;
+  created_at: string;
+}
+
+export interface AgentActivity {
+  id: string;
+  agent_id: string;
+  action: ActionType;
+  file_id?: string;
+  source_id?: string;
+  session_id?: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface IndexStats {

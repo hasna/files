@@ -61,6 +61,11 @@ function migrate(db: Database): void {
     { version: 1, sql: migration_v1 },
     { version: 2, sql: migration_v2 },
     { version: 3, sql: migration_v3 },
+    { version: 4, sql: migration_v4 },
+    { version: 5, sql: migration_v5 },
+    { version: 6, sql: migration_v6 },
+    { version: 7, sql: migration_v7 },
+    { version: 8, sql: migration_v8 },
   ];
 
   for (const m of migrations) {
@@ -196,6 +201,77 @@ const migration_v3 = `
     auto_sync INTEGER NOT NULL DEFAULT 0,
     sync_interval_minutes INTEGER NOT NULL DEFAULT 30,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`;
+
+// v4: file normalization + agents + activity
+const migration_v4 = `
+  ALTER TABLE files ADD COLUMN original_name TEXT;
+  ALTER TABLE files ADD COLUMN canonical_name TEXT;
+
+  CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    session_id TEXT,
+    project_id TEXT,
+    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_activity (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    file_id TEXT REFERENCES files(id) ON DELETE SET NULL,
+    source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
+    session_id TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_activity_agent ON agent_activity(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_activity_file ON agent_activity(file_id);
+  CREATE INDEX IF NOT EXISTS idx_activity_action ON agent_activity(action);
+  CREATE INDEX IF NOT EXISTS idx_activity_session ON agent_activity(session_id);
+  CREATE INDEX IF NOT EXISTS idx_activity_created ON agent_activity(created_at);
+  CREATE INDEX IF NOT EXISTS idx_files_canonical ON files(canonical_name);
+`;
+
+// v5: smart collections + project enhancements
+const migration_v5 = `
+  ALTER TABLE collections ADD COLUMN parent_id TEXT REFERENCES collections(id);
+  ALTER TABLE collections ADD COLUMN auto_rules TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE collections ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+
+  ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+  ALTER TABLE projects ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+`;
+
+// v6: sync improvements
+const migration_v6 = `
+  ALTER TABLE files ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE files ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'local_only';
+  ALTER TABLE peers ADD COLUMN last_sync_version INTEGER NOT NULL DEFAULT 0;
+`;
+
+// v7: file descriptions for search enrichment
+const migration_v7 = `
+  ALTER TABLE files ADD COLUMN description TEXT NOT NULL DEFAULT '';
+`;
+
+// v8: rebuild FTS5 with description + canonical_name (content-bearing so id is retrievable)
+const migration_v8 = `
+  DROP TABLE IF EXISTS files_fts;
+  CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+    id UNINDEXED,
+    name,
+    path,
+    ext,
+    mime,
+    tags,
+    canonical_name,
+    description,
+    tokenize='unicode61'
   );
 `;
 

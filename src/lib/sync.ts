@@ -6,23 +6,27 @@
  * 2. Upserting remote file records into local DB (tagged with remote machine_id)
  * 3. Upserting remote machine record so it appears in list_machines
  *
- * This gives you a merged view across all machines without a central DB.
+ * Incremental sync: uses sync_version to only fetch files changed since last sync.
+ * Conflict detection: if remote file has different hash for same path, marks as 'conflict'.
  */
 
 import { upsertMachine } from "../db/machines.js";
-import { upsertFile } from "../db/files.js";
+import { upsertFile, getFileByPath } from "../db/files.js";
 import { createSource, getSource } from "../db/sources.js";
+import { getDb } from "../db/database.js";
 import type { Machine, FileRecord, Source } from "../types/index.js";
 
 export interface SyncResult {
   peer: string;
   machines_synced: number;
   files_synced: number;
+  conflicts: number;
   errors: string[];
 }
 
 export async function syncWithPeer(peerUrl: string): Promise<SyncResult> {
-  const result: SyncResult = { peer: peerUrl, machines_synced: 0, files_synced: 0, errors: [] };
+  const result: SyncResult = { peer: peerUrl, machines_synced: 0, files_synced: 0, conflicts: 0, errors: [] };
+  const db = getDb();
 
   // 1. Fetch remote machine
   let remoteMachine: Machine;
@@ -46,32 +50,48 @@ export async function syncWithPeer(peerUrl: string): Promise<SyncResult> {
     // non-fatal
   }
 
-  // Ensure we have a local source record for each remote source
   for (const rs of remoteSources) {
     const existing = getSource(rs.id);
     if (!existing) {
-      // Create a stub source record for the remote machine
-      createSource({
-        ...rs,
-        machine_id: remoteMachine.id,
-        config: {},
-      });
+      createSource({ ...rs, machine_id: remoteMachine.id, config: {} });
     }
   }
 
-  // 3. Fetch remote files (paginated)
+  // 3. Get last_sync_version for this peer
+  const peerRow = db.query<{ id: string; last_sync_version: number }, [string]>(
+    "SELECT id, last_sync_version FROM peers WHERE url = ?"
+  ).get(peerUrl);
+  const sinceVersion = peerRow?.last_sync_version ?? 0;
+
+  // 4. Fetch remote files incrementally
   let offset = 0;
   const limit = 200;
+  let maxRemoteVersion = sinceVersion;
+
   while (true) {
     try {
-      const resp = await fetch(`${peerUrl}/files?machine_id=${remoteMachine.id}&limit=${limit}&offset=${offset}`);
+      const resp = await fetch(
+        `${peerUrl}/files?machine_id=${remoteMachine.id}&limit=${limit}&offset=${offset}&since_version=${sinceVersion}`
+      );
       if (!resp.ok) break;
-      const files = await resp.json() as FileRecord[];
+      const files = await resp.json() as (FileRecord & { sync_version?: number })[];
       if (!files.length) break;
 
       for (const f of files) {
+        // Conflict detection: if we have same source+path with different hash
+        const local = getFileByPath(f.source_id, f.path);
+        if (local && local.hash && f.hash && local.hash !== f.hash) {
+          db.run("UPDATE files SET sync_status = 'conflict' WHERE id = ?", [local.id]);
+          result.conflicts++;
+        }
+
         upsertFile({ ...f });
+        db.run("UPDATE files SET sync_status = 'synced' WHERE source_id = ? AND path = ? AND sync_status = 'local_only'", [f.source_id, f.path]);
         result.files_synced++;
+
+        if (f.sync_version && f.sync_version > maxRemoteVersion) {
+          maxRemoteVersion = f.sync_version;
+        }
       }
 
       if (files.length < limit) break;
@@ -80,6 +100,11 @@ export async function syncWithPeer(peerUrl: string): Promise<SyncResult> {
       result.errors.push(`File sync error at offset ${offset}: ${(e as Error).message}`);
       break;
     }
+  }
+
+  // 5. Update peer's last_sync_version
+  if (peerRow) {
+    db.run("UPDATE peers SET last_sync_version = ?, last_synced_at = datetime('now') WHERE id = ?", [maxRemoteVersion, peerRow.id]);
   }
 
   return result;

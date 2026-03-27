@@ -135,4 +135,53 @@ export const PG_MIGRATIONS: string[] = [
     machine_id TEXT,
     created_at TEXT NOT NULL DEFAULT NOW()::text
   )`,
+
+  // Migration 13: file normalization columns
+  `ALTER TABLE files ADD COLUMN IF NOT EXISTS original_name TEXT`,
+  `ALTER TABLE files ADD COLUMN IF NOT EXISTS canonical_name TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_files_canonical ON files(canonical_name)`,
+
+  // Migration 14: agents table
+  `CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    session_id TEXT,
+    project_id TEXT,
+    last_seen_at TEXT NOT NULL DEFAULT NOW()::text,
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )`,
+
+  // Migration 15: agent_activity table
+  `CREATE TABLE IF NOT EXISTS agent_activity (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    file_id TEXT REFERENCES files(id) ON DELETE SET NULL,
+    source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
+    session_id TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT NOW()::text
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_activity_agent ON agent_activity(agent_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_activity_file ON agent_activity(file_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_activity_action ON agent_activity(action)`,
+  `CREATE INDEX IF NOT EXISTS idx_activity_session ON agent_activity(session_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_activity_created ON agent_activity(created_at)`,
+
+  // Migration 16: smart collections
+  `ALTER TABLE collections ADD COLUMN IF NOT EXISTS parent_id TEXT REFERENCES collections(id)`,
+  `ALTER TABLE collections ADD COLUMN IF NOT EXISTS auto_rules TEXT NOT NULL DEFAULT '{}'`,
+  `ALTER TABLE collections ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'`,
+
+  // Migration 17: project enhancements
+  `ALTER TABLE projects ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
+  `ALTER TABLE projects ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'`,
+
+  // Migration 18: sync improvements
+  `ALTER TABLE files ADD COLUMN IF NOT EXISTS sync_version INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE files ADD COLUMN IF NOT EXISTS sync_status TEXT NOT NULL DEFAULT 'local_only'`,
+  `ALTER TABLE peers ADD COLUMN IF NOT EXISTS last_sync_version INTEGER NOT NULL DEFAULT 0`,
+
+  // Migration 19: file descriptions
+  `ALTER TABLE files ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`,
 ];

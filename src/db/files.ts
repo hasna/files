@@ -1,5 +1,6 @@
 import { getDb } from "./database.js";
 import { nanoid } from "nanoid";
+import { generateCanonicalName } from "../lib/normalize.js";
 import type { FileRecord, FileWithTags, ListFilesOptions, FileStatus } from "../types/index.js";
 
 interface FileRow {
@@ -8,9 +9,12 @@ interface FileRow {
   machine_id: string;
   path: string;
   name: string;
+  original_name: string | null;
+  canonical_name: string | null;
   ext: string;
   size: number;
   mime: string;
+  description: string;
   hash: string | null;
   status: string;
   indexed_at: string;
@@ -22,8 +26,11 @@ function toFile(row: FileRow): FileRecord {
   return {
     ...row,
     status: row.status as FileStatus,
+    description: row.description || undefined,
     hash: row.hash ?? undefined,
     modified_at: row.modified_at ?? undefined,
+    original_name: row.original_name ?? undefined,
+    canonical_name: row.canonical_name ?? undefined,
   };
 }
 
@@ -35,19 +42,25 @@ export function upsertFile(input: Omit<FileRecord, "id" | "indexed_at" | "create
 
   if (existing) {
     db.run(
-      `UPDATE files SET name=?, ext=?, size=?, mime=?, hash=?, status=?, modified_at=?, indexed_at=datetime('now')
+      `UPDATE files SET name=?, ext=?, size=?, mime=?, hash=?, status=?, modified_at=?, indexed_at=datetime('now'), sync_version=sync_version+1
        WHERE id=?`,
       [input.name, input.ext, input.size, input.mime, input.hash ?? null, input.status, input.modified_at ?? null, existing.id]
     );
+    // Backfill canonical_name if missing
+    if (!existing.canonical_name) {
+      const canonical = generateCanonicalName(input.name);
+      db.run("UPDATE files SET original_name=?, canonical_name=? WHERE id=?", [input.name, canonical, existing.id]);
+    }
     syncFts(existing.id);
     return toFile(db.query<FileRow, [string]>("SELECT * FROM files WHERE id=?").get(existing.id)!);
   }
 
   const id = input.id ?? `f_${nanoid(10)}`;
+  const canonical = generateCanonicalName(input.name);
   db.run(
-    `INSERT INTO files (id, source_id, machine_id, path, name, ext, size, mime, hash, status, modified_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.source_id, input.machine_id, input.path, input.name, input.ext, input.size, input.mime, input.hash ?? null, input.status, input.modified_at ?? null]
+    `INSERT INTO files (id, source_id, machine_id, path, name, original_name, canonical_name, ext, size, mime, hash, status, modified_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.source_id, input.machine_id, input.path, input.name, input.name, canonical, input.ext, input.size, input.mime, input.hash ?? null, input.status, input.modified_at ?? null]
   );
   syncFts(id);
   return toFile(db.query<FileRow, [string]>("SELECT * FROM files WHERE id=?").get(id)!);
@@ -62,8 +75,8 @@ function syncFts(file_id: string): void {
   ).all(file_id).map((r) => r.name).join(" ");
   db.run("DELETE FROM files_fts WHERE id=?", [file_id]);
   db.run(
-    "INSERT INTO files_fts (id, name, path, ext, mime, tags) VALUES (?, ?, ?, ?, ?, ?)",
-    [file_id, file.name, file.path, file.ext, file.mime, tags]
+    "INSERT INTO files_fts (id, name, path, ext, mime, tags, canonical_name, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [file_id, file.name, file.path, file.ext, file.mime, tags, file.canonical_name ?? "", file.description ?? ""]
   );
 }
 
@@ -156,6 +169,28 @@ export function getFileByPath(source_id: string, path: string): FileRecord | nul
     "SELECT * FROM files WHERE source_id=? AND path=?"
   ).get(source_id, path);
   return row ? toFile(row) : null;
+}
+
+export function annotateFile(id: string, description: string): FileRecord | null {
+  const db = getDb();
+  const result = db.run("UPDATE files SET description = ?, sync_version = sync_version + 1 WHERE id = ?", [description, id]);
+  if (result.changes === 0) return null;
+  syncFts(id);
+  return toFile(db.query<FileRow, [string]>("SELECT * FROM files WHERE id=?").get(id)!);
+}
+
+export function getMaxSyncVersion(): number {
+  const row = getDb().query<{ max_v: number }, []>("SELECT COALESCE(MAX(sync_version), 0) as max_v FROM files").get();
+  return row?.max_v ?? 0;
+}
+
+export function getFilesSince(since_version: number, limit = 200, offset = 0): FileRecord[] {
+  return getDb()
+    .query<FileRow, [number, number, number]>(
+      "SELECT * FROM files WHERE sync_version > ? ORDER BY sync_version ASC LIMIT ? OFFSET ?"
+    )
+    .all(since_version, limit, offset)
+    .map(toFile);
 }
 
 export function refreshAllFts(): void {
