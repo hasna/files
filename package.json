@@ -1,6 +1,6 @@
 {
   "name": "@hasna/files",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Agent-first file management — index local folders and S3 buckets, tag, search, and retrieve files via CLI + MCP",
   "type": "module",
   "main": "dist/index.js",

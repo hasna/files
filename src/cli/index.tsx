@@ -18,12 +18,16 @@ import { resolve, join } from "path";
 import { existsSync } from "fs";
 import type { S3Config } from "../types/index.js";
 
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
+const _pkg = _require("../../package.json") as { version: string };
+
 const program = new Command();
 
 program
   .name("files")
   .description("Agent-first file management — index, search, and retrieve files across local and S3 sources")
-  .version("0.1.0");
+  .version(_pkg.version);
 
 // ─── sources ────────────────────────────────────────────────────────────────
 
