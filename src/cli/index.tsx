@@ -37,9 +37,11 @@ sources
   .command("list")
   .alias("ls")
   .description("List all configured sources")
-  .action(() => {
+  .option("--json", "Output as JSON")
+  .action((opts: { json?: boolean }) => {
     const machine = getCurrentMachine();
     const all = listSources();
+    if (opts.json) { console.log(JSON.stringify(all, null, 2)); return; }
     if (!all.length) {
       console.log(chalk.dim("No sources configured. Run: files sources add <path>"));
       return;
@@ -191,8 +193,10 @@ program
 program
   .command("machines")
   .description("List known machines")
-  .action(() => {
+  .option("--json", "Output as JSON")
+  .action((opts: { json?: boolean }) => {
     const machines = listMachines();
+    if (opts.json) { console.log(JSON.stringify(machines, null, 2)); return; }
     for (const m of machines) {
       const current = m.is_current ? chalk.green(" (this machine)") : "";
       console.log(`${chalk.bold(m.id)}  ${chalk.cyan(m.hostname)}  ${m.platform}/${m.arch}  ${chalk.dim(m.last_seen)}${current}`);
@@ -308,8 +312,10 @@ program
 program
   .command("tags")
   .description("List all tags")
-  .action(() => {
+  .option("--json", "Output as JSON")
+  .action((opts: { json?: boolean }) => {
     const tags = listTags();
+    if (opts.json) { console.log(JSON.stringify(tags, null, 2)); return; }
     if (!tags.length) { console.log(chalk.dim("No tags yet.")); return; }
     for (const t of tags) console.log(`${chalk.bold(t.id)}  ${chalk.hex(t.color)(t.name)}`);
   });
@@ -356,9 +362,14 @@ program
 // ─── collections / projects ──────────────────────────────────────────────────
 
 const cols = program.command("collections").description("Manage collections");
-cols.command("list").action(() => {
-  for (const c of listCollections()) console.log(`${chalk.bold(c.id)}  ${chalk.cyan(c.name)}  ${chalk.dim(c.description)}`);
-});
+cols
+  .command("list")
+  .option("--json", "Output as JSON")
+  .action((opts: { json?: boolean }) => {
+    const collections = listCollections();
+    if (opts.json) { console.log(JSON.stringify(collections, null, 2)); return; }
+    for (const c of collections) console.log(`${chalk.bold(c.id)}  ${chalk.cyan(c.name)}  ${chalk.dim(c.description)}`);
+  });
 cols.command("create <name> [description]").action((name: string, desc?: string) => {
   const c = createCollection(name, desc);
   console.log(chalk.green(`✓ Collection created: ${c.id}`));
@@ -377,9 +388,14 @@ cols.command("add <collection-id> <file-id>").action((colId: string, fileId: str
 });
 
 const projs = program.command("projects").description("Manage projects");
-projs.command("list").action(() => {
-  for (const p of listProjects()) console.log(`${chalk.bold(p.id)}  ${chalk.cyan(p.name)}  ${chalk.dim(p.description)}`);
-});
+projs
+  .command("list")
+  .option("--json", "Output as JSON")
+  .action((opts: { json?: boolean }) => {
+    const projects = listProjects();
+    if (opts.json) { console.log(JSON.stringify(projects, null, 2)); return; }
+    for (const p of projects) console.log(`${chalk.bold(p.id)}  ${chalk.cyan(p.name)}  ${chalk.dim(p.description)}`);
+  });
 projs.command("create <name> [description]").action((name: string, desc?: string) => {
   const p = createProject(name, desc);
   console.log(chalk.green(`✓ Project created: ${p.id}`));
@@ -402,8 +418,10 @@ projs.command("add <project-id> <file-id>").action((projId: string, fileId: stri
 program
   .command("info <file-id>")
   .description("Show file details")
-  .action((fileId: string) => {
+  .option("--json", "Output as JSON")
+  .action((fileId: string, opts: { json?: boolean }) => {
     let file; try { file = getFile(requireId(fileId, "files"))!; } catch (e) { console.error(chalk.red((e as Error).message)); process.exit(1); }
+    if (opts.json) { console.log(JSON.stringify(file, null, 2)); return; }
     console.log(`${chalk.bold("ID:")}        ${file.id}`);
     console.log(`${chalk.bold("Name:")}      ${file.name}`);
     console.log(`${chalk.bold("Path:")}      ${file.path}`);
@@ -512,8 +530,10 @@ peers
   .command("list")
   .alias("ls")
   .description("List saved peers")
-  .action(() => {
+  .option("--json", "Output as JSON")
+  .action((opts: { json?: boolean }) => {
     const all = listPeers();
+    if (opts.json) { console.log(JSON.stringify(all, null, 2)); return; }
     if (!all.length) { console.log(chalk.dim("No peers saved. Run: files peers add <url>")); return; }
     for (const p of all) {
       const auto = p.auto_sync ? chalk.green(` [auto every ${p.sync_interval_minutes}m]`) : "";
