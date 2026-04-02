@@ -17,11 +17,15 @@ import { logActivity, getFileHistory, getAgentActivity, getSessionActivity } fro
 import { join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
+import { createRequire } from "module";
 import type { S3Config } from "../types/index.js";
+
+const require = createRequire(import.meta.url);
+const pkg = require("../../package.json") as { version: string };
 
 const server = new McpServer({
   name: "files",
-  version: "0.2.0",
+  version: pkg.version,
 });
 
 // ─── Sources ──────────────────────────────────────────────────────────────────
@@ -1019,7 +1023,6 @@ server.tool(
     try {
       const { getDb: getFeedbackDb } = await import("../db/database.js");
       const db = getFeedbackDb();
-      const pkg = require("../../package.json");
       db.run("INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)", [
         params.message, params.email || null, params.category || "general", pkg.version,
       ]);
@@ -1130,6 +1133,15 @@ for (const source of allSources) {
   if (source.type === "local") {
     indexLocalSource(source, machine.id).catch(() => {});
   }
+}
+
+function printHelp(): void {
+  console.log("Usage: files-mcp [options]\n\nRuns the open-files MCP stdio server.\n\nOptions:\n  -h, --help        Show this help text");
+}
+
+if (process.argv.includes("-h") || process.argv.includes("--help")) {
+  printHelp();
+  process.exit(0);
 }
 
 const transport = new StdioServerTransport();

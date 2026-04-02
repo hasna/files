@@ -12,6 +12,20 @@ import { syncWithPeer } from "../lib/sync.js";
 
 const DEFAULT_PORT = 19432;
 
+function printHelp(): void {
+  console.log(`Usage: files-serve [options]
+
+Serve the open-files HTTP API.
+
+Options:
+  --port <number>   Port to bind (default: ${DEFAULT_PORT})
+  -h, --help        Show this help text`);
+}
+
+function shouldShowHelp(): boolean {
+  return process.argv.includes("-h") || process.argv.includes("--help");
+}
+
 function getRequestedPort(): number {
   const portArg = process.argv.find((a) => a === "--port" || a.startsWith("--port="));
   if (portArg) {
@@ -33,6 +47,11 @@ async function findFreePort(start: number): Promise<number> {
     }
   }
   return start;
+}
+
+if (shouldShowHelp()) {
+  printHelp();
+  process.exit(0);
 }
 
 const requestedPort = getRequestedPort();

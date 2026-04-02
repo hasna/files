@@ -15,7 +15,7 @@ import { indexS3Source, downloadFromS3, uploadToS3 } from "../lib/s3.js";
 import { DB_PATH, getDb } from "../db/database.js";
 import { requireId } from "../db/resolve.js";
 import { resolve, join } from "path";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import type { S3Config } from "../types/index.js";
 
 import { createRequire } from "module";
@@ -585,7 +585,7 @@ program
       const source = getSource(file.source_id);
       if (!source || source.type !== "local") { console.error(chalk.red("cat only works with local sources")); process.exit(1); }
       const fullPath = join(source.path!, file.path);
-      const { readFileSync } = require("fs") as typeof import("fs");
+
       const maxBytes = parseInt(opts.maxBytes, 10);
       const buf = readFileSync(fullPath);
       const slice = maxBytes > 0 ? buf.slice(0, maxBytes) : buf;

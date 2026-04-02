@@ -9,7 +9,11 @@ import { indexLocalSource } from "../lib/indexer.js";
 import { indexS3Source, downloadFromS3 } from "../lib/s3.js";
 import { join } from "path";
 import { homedir } from "os";
+import { createRequire } from "module";
 import type { S3Config } from "../types/index.js";
+
+const require = createRequire(import.meta.url);
+const pkg = require("../../package.json") as { version: string };
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -215,7 +219,7 @@ export function startServer(port: number): void {
       }
 
       // ── Health ────────────────────────────────────────────────────────────
-      if (path === "/health") return json({ ok: true, version: "0.2.0" });
+      if (path === "/health") return json({ ok: true, version: pkg.version });
 
       return err("Not found", 404);
     },
