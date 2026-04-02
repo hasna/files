@@ -142,8 +142,13 @@ sources
 sources
   .command("remove <id>")
   .description("Remove a source (and all its indexed files)")
-  .action((id: string) => {
+  .option("--yes", "Confirm destructive removal")
+  .action((id: string, opts: { yes?: boolean }) => {
     try {
+      if (!opts.yes) {
+        console.error(chalk.red("Refusing to remove source without --yes (destructive operation)."));
+        process.exit(1);
+      }
       const resolvedId = requireId(id, "sources");
       deleteSource(resolvedId);
       console.log(chalk.green(`✓ Source ${resolvedId} removed`));
@@ -374,8 +379,12 @@ cols.command("create <name> [description]").action((name: string, desc?: string)
   const c = createCollection(name, desc);
   console.log(chalk.green(`✓ Collection created: ${c.id}`));
 });
-cols.command("remove <id>").description("Delete a collection").action((id: string) => {
+cols.command("remove <id>").description("Delete a collection").option("--yes", "Confirm destructive removal").action((id: string, opts: { yes?: boolean }) => {
   try {
+    if (!opts.yes) {
+      console.error(chalk.red("Refusing to remove collection without --yes (destructive operation)."));
+      process.exit(1);
+    }
     const ok = deleteCollection(requireId(id, "collections"));
     console.log(ok ? chalk.green("✓ Collection removed") : chalk.red("Collection not found"));
   } catch (e) { console.error(chalk.red((e as Error).message)); process.exit(1); }
@@ -400,8 +409,12 @@ projs.command("create <name> [description]").action((name: string, desc?: string
   const p = createProject(name, desc);
   console.log(chalk.green(`✓ Project created: ${p.id}`));
 });
-projs.command("remove <id>").description("Delete a project").action((id: string) => {
+projs.command("remove <id>").description("Delete a project").option("--yes", "Confirm destructive removal").action((id: string, opts: { yes?: boolean }) => {
   try {
+    if (!opts.yes) {
+      console.error(chalk.red("Refusing to remove project without --yes (destructive operation)."));
+      process.exit(1);
+    }
     const ok = deleteProject(requireId(id, "projects"));
     console.log(ok ? chalk.green("✓ Project removed") : chalk.red("Project not found"));
   } catch (e) { console.error(chalk.red((e as Error).message)); process.exit(1); }
@@ -557,7 +570,12 @@ peers
 peers
   .command("remove <id-or-url>")
   .description("Remove a peer")
-  .action((idOrUrl: string) => {
+  .option("--yes", "Confirm destructive removal")
+  .action((idOrUrl: string, opts: { yes?: boolean }) => {
+    if (!opts.yes) {
+      console.error(chalk.red("Refusing to remove peer without --yes (destructive operation)."));
+      process.exit(1);
+    }
     const ok = removePeer(idOrUrl);
     if (ok) console.log(chalk.green("✓ Peer removed"));
     else console.error(chalk.red(`Peer not found: ${idOrUrl}`));
@@ -719,7 +737,12 @@ function formatSize(bytes: number): string {
 program
   .command("remove <source-id>")
   .description("Remove a source and all its indexed files (alias for sources remove)")
-  .action((id: string) => {
+  .option("--yes", "Confirm destructive removal")
+  .action((id: string, opts: { yes?: boolean }) => {
+    if (!opts.yes) {
+      console.error(chalk.red("Refusing to remove source without --yes (destructive operation)."));
+      process.exit(1);
+    }
     const resolvedId = requireId(id, "sources");
     const ok = deleteSource(resolvedId);
     if (ok) console.log(chalk.green(`✓ Source ${resolvedId} removed`));
