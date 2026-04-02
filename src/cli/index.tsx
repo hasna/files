@@ -473,10 +473,31 @@ program
 program
   .command("stats")
   .description("Show storage statistics")
-  .action(() => {
+  .option("--json", "Output as JSON")
+  .action((opts: { json?: boolean }) => {
     const db = getDb();
     const totalFiles = (db.query<{ n: number }, []>("SELECT COUNT(*) as n FROM files WHERE status='active'").get())!.n;
     const totalSize = (db.query<{ s: number }, []>("SELECT COALESCE(SUM(size),0) as s FROM files WHERE status='active'").get())!.s;
+
+    if (opts.json) {
+      const bySource = db.query<{ name: string; cnt: number; sz: number }, []>(`
+        SELECT s.name, COUNT(f.id) as cnt, COALESCE(SUM(f.size),0) as sz
+        FROM sources s LEFT JOIN files f ON f.source_id=s.id AND f.status='active'
+        GROUP BY s.id ORDER BY sz DESC
+      `).all();
+      const byExtJson = db.query<{ ext: string; cnt: number; sz: number }, []>(`
+        SELECT ext, COUNT(*) as cnt, COALESCE(SUM(size),0) as sz
+        FROM files WHERE status='active' AND ext != ''
+        GROUP BY ext ORDER BY cnt DESC LIMIT 15
+      `).all();
+      const byMachineJson = db.query<{ hostname: string; cnt: number; sz: number }, []>(`
+        SELECT m.hostname, COUNT(f.id) as cnt, COALESCE(SUM(f.size),0) as sz
+        FROM machines m LEFT JOIN files f ON f.machine_id=m.id AND f.status='active'
+        GROUP BY m.id ORDER BY cnt DESC
+      `).all();
+      console.log(JSON.stringify({ total_files: totalFiles, total_size: totalSize, by_source: bySource, by_ext: byExtJson, by_machine: byMachineJson }, null, 2));
+      return;
+    }
 
     console.log(chalk.bold("\n  Files Overview"));
     console.log(`  ${chalk.cyan(totalFiles.toLocaleString())} files  ${chalk.cyan(formatSize(totalSize))} total\n`);
@@ -519,7 +540,8 @@ program
   .command("dupes")
   .description("Find duplicate files (same BLAKE3 hash, different paths)")
   .option("-s, --source <id>", "Limit to a specific source")
-  .action((opts: { source?: string }) => {
+  .option("--json", "Output as JSON")
+  .action((opts: { source?: string; json?: boolean }) => {
     const db = getDb();
     const resolvedSourceId = opts.source ? requireId(opts.source, "sources") : undefined;
 
@@ -536,6 +558,20 @@ program
           GROUP BY hash HAVING cnt > 1
           ORDER BY total_size DESC
         `).all();
+
+    if (opts.json) {
+      const detailedGroups = groups.map((g) => ({
+        hash: g.hash,
+        count: g.cnt,
+        total_size: g.total_size,
+        files: db.query<{ id: string; name: string; path: string; source_id: string; size: number }, [string]>(
+          "SELECT id, name, path, source_id, size FROM files WHERE hash=? AND status='active' ORDER BY indexed_at"
+        ).all(g.hash),
+      }));
+      const wastedBytes = groups.reduce((acc, g) => acc + g.total_size - (g.total_size / g.cnt), 0);
+      console.log(JSON.stringify({ groups: detailedGroups, wasted_bytes: wastedBytes }, null, 2));
+      return;
+    }
 
     if (!groups.length) {
       console.log(chalk.green("✓ No duplicates found."));
@@ -613,9 +649,11 @@ peers
 program
   .command("sync <peer-url...>")
   .description("Sync file index from one or more peer machines (e.g. http://192.168.1.10:19432)")
-  .action(async (peerUrls: string[]) => {
+  .option("--json", "Output as JSON")
+  .action(async (peerUrls: string[], opts: { json?: boolean }) => {
     const { syncWithPeers } = await import("../lib/sync.js");
     const results = await syncWithPeers(peerUrls);
+    if (opts.json) { console.log(JSON.stringify(results, null, 2)); return; }
     for (const r of results) {
       if (r.errors.length) {
         console.error(chalk.red(`✗ ${r.peer}: ${r.errors.join(", ")}`));
