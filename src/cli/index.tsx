@@ -468,13 +468,21 @@ program
   .option("-s, --source <id>", "Limit to a specific source")
   .action((opts: { source?: string }) => {
     const db = getDb();
-    const sourceFilter = opts.source ? `AND f.source_id = '${requireId(opts.source, "sources")}'` : "";
-    const groups = db.query<{ hash: string; cnt: number; total_size: number }, []>(`
-      SELECT hash, COUNT(*) as cnt, SUM(size) as total_size
-      FROM files WHERE status='active' AND hash IS NOT NULL ${sourceFilter}
-      GROUP BY hash HAVING cnt > 1
-      ORDER BY total_size DESC
-    `).all();
+    const resolvedSourceId = opts.source ? requireId(opts.source, "sources") : undefined;
+
+    const groups = resolvedSourceId
+      ? db.query<{ hash: string; cnt: number; total_size: number }, [string]>(`
+          SELECT hash, COUNT(*) as cnt, SUM(size) as total_size
+          FROM files WHERE status='active' AND hash IS NOT NULL AND source_id = ?
+          GROUP BY hash HAVING cnt > 1
+          ORDER BY total_size DESC
+        `).all(resolvedSourceId)
+      : db.query<{ hash: string; cnt: number; total_size: number }, []>(`
+          SELECT hash, COUNT(*) as cnt, SUM(size) as total_size
+          FROM files WHERE status='active' AND hash IS NOT NULL
+          GROUP BY hash HAVING cnt > 1
+          ORDER BY total_size DESC
+        `).all();
 
     if (!groups.length) {
       console.log(chalk.green("✓ No duplicates found."));
