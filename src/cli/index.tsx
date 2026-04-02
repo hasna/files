@@ -218,14 +218,26 @@ program
   .option("-t, --tag <tag>", "Filter by tag")
   .option("-e, --ext <ext>", "Filter by extension")
   .option("-l, --limit <n>", "Max results", "20")
+  .option("--offset <n>", "Offset", "0")
   .option("--json", "Output as JSON")
-  .action((query: string, opts: { source?: string; machine?: string; tag?: string; ext?: string; limit: string; json?: boolean }) => {
+  .action((query: string, opts: { source?: string; machine?: string; tag?: string; ext?: string; limit: string; offset: string; json?: boolean }) => {
+    let limit: number;
+    let offset: number;
+    try {
+      limit = parseIntFlag(opts.limit, "limit", { min: 1 });
+      offset = parseIntFlag(opts.offset, "offset", { min: 0 });
+    } catch (e) {
+      console.error(chalk.red((e as Error).message));
+      process.exit(1);
+    }
+
     const results = searchFiles(query, {
       source_id: opts.source,
       machine_id: opts.machine,
       tag: opts.tag,
       ext: opts.ext,
-      limit: parseInt(opts.limit, 10),
+      limit,
+      offset,
     });
     if (opts.json) { console.log(JSON.stringify(results, null, 2)); return; }
     if (!results.length) { console.log(chalk.dim("No results.")); return; }
@@ -264,6 +276,16 @@ program
     after?: string; before?: string; minSize?: string; maxSize?: string;
     sort?: string; asc?: boolean; json?: boolean;
   }) => {
+    let limit: number;
+    let offset: number;
+    try {
+      limit = parseIntFlag(opts.limit, "limit", { min: 1 });
+      offset = parseIntFlag(opts.offset, "offset", { min: 0 });
+    } catch (e) {
+      console.error(chalk.red((e as Error).message));
+      process.exit(1);
+    }
+
     const files = listFiles({
       source_id: opts.source,
       machine_id: opts.machine,
@@ -271,8 +293,8 @@ program
       ext: opts.ext,
       collection_id: opts.collection,
       project_id: opts.project,
-      limit: parseInt(opts.limit, 10),
-      offset: parseInt(opts.offset, 10),
+      limit,
+      offset,
       after: opts.after,
       before: opts.before,
       min_size: opts.minSize ? parseSize(opts.minSize) : undefined,
@@ -562,7 +584,14 @@ peers
   .option("--auto", "Enable auto-sync")
   .option("--interval <minutes>", "Auto-sync interval in minutes", "30")
   .action((url: string, opts: { name?: string; auto?: boolean; interval: string }) => {
-    const peer = addPeer(url, opts.name ?? "", opts.auto ?? false, parseInt(opts.interval, 10));
+    let intervalMinutes: number;
+    try {
+      intervalMinutes = parseIntFlag(opts.interval, "interval", { min: 1 });
+    } catch (e) {
+      console.error(chalk.red((e as Error).message));
+      process.exit(1);
+    }
+    const peer = addPeer(url, opts.name ?? "", opts.auto ?? false, intervalMinutes);
     console.log(chalk.green(`✓ Peer added: ${peer.id} → ${peer.url}`));
     if (peer.auto_sync) console.log(chalk.dim(`  Auto-sync every ${peer.sync_interval_minutes} minutes`));
   });
@@ -632,7 +661,7 @@ program
       if (!source || source.type !== "local") { console.error(chalk.red("cat only works with local sources")); process.exit(1); }
       const fullPath = join(source.path!, file.path);
 
-      const maxBytes = parseInt(opts.maxBytes, 10);
+      const maxBytes = parseIntFlag(opts.maxBytes, "max-bytes", { min: 0 });
       const buf = readFileSync(fullPath);
       const slice = maxBytes > 0 ? buf.slice(0, maxBytes) : buf;
       process.stdout.write(slice);
@@ -645,10 +674,18 @@ program
   .option("-l, --limit <n>", "Max results", "20")
   .option("--json", "Output as JSON")
   .action((opts: { limit: string; json?: boolean }) => {
+    let limit: number;
+    try {
+      limit = parseIntFlag(opts.limit, "limit", { min: 1 });
+    } catch (e) {
+      console.error(chalk.red((e as Error).message));
+      process.exit(1);
+    }
+
     const db = getDb();
     const files = db.query<{ id: string; name: string; path: string; size: number; indexed_at: string; source_id: string }, [number]>(
       "SELECT id, name, path, size, indexed_at, source_id FROM files WHERE status='active' ORDER BY indexed_at DESC LIMIT ?"
-    ).all(parseInt(opts.limit, 10));
+    ).all(limit);
     if (opts.json) { console.log(JSON.stringify(files, null, 2)); return; }
     for (const f of files) {
       console.log(`${chalk.bold(f.id)}  ${chalk.cyan(f.name)}  ${formatSize(f.size)}  ${chalk.dim(f.indexed_at)}`);
@@ -714,6 +751,15 @@ program
   .action(() => console.log(DB_PATH));
 
 // ─── utils ───────────────────────────────────────────────────────────────────
+
+function parseIntFlag(value: string, name: string, opts: { min?: number } = {}): number {
+  const n = Number(value);
+  const min = opts.min ?? 0;
+  if (!Number.isInteger(n) || n < min) {
+    throw new Error(`Invalid --${name} value "${value}" (must be an integer >= ${min})`);
+  }
+  return n;
+}
 
 function parseSize(s: string): number {
   const m = s.match(/^(\d+(?:\.\d+)?)\s*(kb|mb|gb|b)?$/i);
