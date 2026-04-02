@@ -634,7 +634,7 @@ program
       const source = getSource(file.source_id);
       if (!source || source.type !== "local") { console.error(chalk.red("open only works with local sources")); process.exit(1); }
       const fullPath = join(source.path!, file.path);
-      Bun.spawn(["open", fullPath], { stdout: "inherit", stderr: "inherit" });
+      Bun.spawn(getOpenCommand(fullPath), { stdout: "inherit", stderr: "inherit" });
     } catch (e) { console.error(chalk.red((e as Error).message)); process.exit(1); }
   });
 
@@ -751,6 +751,12 @@ program
   .action(() => console.log(DB_PATH));
 
 // ─── utils ───────────────────────────────────────────────────────────────────
+
+function getOpenCommand(fullPath: string): string[] {
+  if (process.platform === "darwin") return ["open", fullPath];
+  if (process.platform === "win32") return ["cmd", "/c", "start", "", fullPath];
+  return ["xdg-open", fullPath];
+}
 
 function parseIntFlag(value: string, name: string, opts: { min?: number } = {}): number {
   const n = Number(value);
