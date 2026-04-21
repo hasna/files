@@ -1,6 +1,6 @@
 {
   "name": "@hasna/files",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Agent-first file management — index local folders and S3 buckets, tag, search, and retrieve files via CLI + MCP",
   "type": "module",
   "main": "dist/index.js",
@@ -60,6 +60,7 @@
     "@aws-sdk/lib-storage": "^3.744.0",
     "@aws-sdk/s3-request-presigner": "^3.1009.0",
     "@hasna/cloud": "^0.1.24",
+    "@hasna/connect-googledrive": "file:/home/hasna/workspace/hasna/opensource/open-connectors/connectors/connect-googledrive",
     "@modelcontextprotocol/sdk": "^1.10.1",
     "@noble/hashes": "^1.7.2",
     "chalk": "^5.4.1",

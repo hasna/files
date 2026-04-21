@@ -12,12 +12,13 @@ import { createWriteStream, createReadStream, statSync } from "fs";
 import { basename, extname } from "path";
 import { pipeline } from "stream/promises";
 import { lookup as mimeLookup } from "mime-types";
-import { upsertFile } from "../db/files.js";
+import { upsertFile, listFiles } from "../db/files.js";
+import { getDb } from "../db/database.js";
 import { markSourceIndexed } from "../db/sources.js";
-import type { Source, IndexStats } from "../types/index.js";
+import type { Source, IndexStats, S3Config } from "../types/index.js";
 
 function makeClient(source: Source): S3Client {
-  const cfg = source.config;
+  const cfg = source.config as S3Config;
   return new S3Client({
     region: source.region ?? "us-east-1",
     ...(cfg.endpoint ? { endpoint: cfg.endpoint } : {}),
@@ -39,6 +40,8 @@ export async function indexS3Source(source: Source, machine_id: string): Promise
   const start = Date.now();
   const stats: IndexStats = { source_id: source.id, added: 0, updated: 0, deleted: 0, errors: 0, duration_ms: 0 };
 
+  const seen = new Set<string>();
+
   let continuationToken: string | undefined;
   do {
     const resp = await client.send(
@@ -50,11 +53,25 @@ export async function indexS3Source(source: Source, machine_id: string): Promise
     );
 
     for (const obj of resp.Contents ?? []) {
+      if (!obj.Key || obj.Key.endsWith("/")) continue;
+      seen.add(obj.Key);
       await indexS3Object(obj, source, machine_id, stats);
     }
 
     continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
   } while (continuationToken);
+
+  // Mark files as deleted if they no longer exist in S3
+  const indexedFiles = listFiles({ source_id: source.id, status: "active" });
+  for (const file of indexedFiles) {
+    if (!seen.has(file.path)) {
+      const result = getDb().run(
+        "UPDATE files SET status='deleted', indexed_at=datetime('now') WHERE id=? AND status='active'",
+        [file.id]
+      );
+      if (result.changes > 0) stats.deleted++;
+    }
+  }
 
   stats.duration_ms = Date.now() - start;
   markSourceIndexed(source.id, stats.added + stats.updated);
@@ -78,7 +95,7 @@ async function indexS3Object(
     const modified_at = obj.LastModified?.toISOString();
     const hash = obj.ETag?.replace(/"/g, "");
 
-    upsertFile({
+    const result = upsertFile({
       source_id: source.id,
       machine_id,
       path: key,
@@ -90,7 +107,8 @@ async function indexS3Object(
       status: "active",
       modified_at,
     });
-    stats.added++;
+    if (result.created_at === result.indexed_at) stats.added++;
+    else stats.updated++;
   } catch {
     stats.errors++;
   }
@@ -109,24 +127,36 @@ export async function downloadFromS3(source: Source, filePath: string, destPath:
 
 export async function uploadToS3(source: Source, localPath: string, s3Key?: string): Promise<string> {
   if (!source.bucket) throw new Error("S3 source missing bucket");
-  const client = makeClient(source);
   const key = s3Key ?? (source.prefix ? `${source.prefix}/${basename(localPath)}` : basename(localPath));
   const mime = (mimeLookup(localPath) || "application/octet-stream") as string;
   const stat = statSync(localPath);
+
+  return uploadBufferToS3(source, createReadStream(localPath), key, mime, stat.size);
+}
+
+export async function uploadBufferToS3(
+  source: Source,
+  body: ArrayBuffer | Uint8Array | Buffer | NodeJS.ReadableStream,
+  s3Key: string,
+  contentType = "application/octet-stream",
+  contentLength?: number,
+): Promise<string> {
+  if (!source.bucket) throw new Error("S3 source missing bucket");
+  const client = makeClient(source);
 
   const upload = new Upload({
     client,
     params: {
       Bucket: source.bucket,
-      Key: key,
-      Body: createReadStream(localPath),
-      ContentType: mime,
-      ContentLength: stat.size,
+      Key: s3Key,
+      Body: body,
+      ContentType: contentType,
+      ...(contentLength !== undefined ? { ContentLength: contentLength } : {}),
     },
   });
 
   await upload.done();
-  return key;
+  return s3Key;
 }
 
 export async function deleteFromS3(source: Source, filePath: string): Promise<void> {

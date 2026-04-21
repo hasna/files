@@ -1,6 +1,6 @@
 import { getDb } from "./database.js";
 import { nanoid } from "nanoid";
-import type { Source, SourceType, S3Config } from "../types/index.js";
+import type { Source, SourceType, SourceConfig } from "../types/index.js";
 
 interface SourceRow {
   id: string;
@@ -27,7 +27,7 @@ function toSource(row: SourceRow): Source {
     bucket: row.bucket ?? undefined,
     prefix: row.prefix ?? undefined,
     region: row.region ?? undefined,
-    config: JSON.parse(row.config) as S3Config,
+    config: JSON.parse(row.config) as SourceConfig,
     enabled: row.enabled === 1,
     last_indexed_at: row.last_indexed_at ?? undefined,
   };
@@ -40,7 +40,7 @@ export function createSource(input: {
   bucket?: string;
   prefix?: string;
   region?: string;
-  config?: S3Config;
+  config?: SourceConfig;
   machine_id: string;
 }): Source {
   const db = getDb();

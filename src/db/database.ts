@@ -66,6 +66,7 @@ function migrate(db: Database): void {
     { version: 6, sql: migration_v6 },
     { version: 7, sql: migration_v7 },
     { version: 8, sql: migration_v8 },
+    { version: 9, sql: migration_v9 },
   ];
 
   for (const m of migrations) {
@@ -273,6 +274,77 @@ const migration_v8 = `
     description,
     tokenize='unicode61'
   );
+`;
+
+// v9: google drive sources + import state
+const migration_v9 = `
+  PRAGMA foreign_keys=OFF;
+
+  ALTER TABLE sources RENAME TO sources_old;
+
+  CREATE TABLE sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('local', 's3', 'google_drive')),
+    path TEXT,
+    bucket TEXT,
+    prefix TEXT,
+    region TEXT,
+    config TEXT NOT NULL DEFAULT '{}',
+    machine_id TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_indexed_at TEXT,
+    file_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  INSERT INTO sources (
+    id, name, type, path, bucket, prefix, region, config, machine_id,
+    enabled, last_indexed_at, file_count, created_at, updated_at
+  )
+  SELECT
+    id, name, type, path, bucket, prefix, region, config, machine_id,
+    enabled, last_indexed_at, file_count, created_at, updated_at
+  FROM sources_old;
+
+  DROP TABLE sources_old;
+
+  CREATE INDEX IF NOT EXISTS idx_sources_machine ON sources(machine_id);
+  CREATE INDEX IF NOT EXISTS idx_sources_type ON sources(type);
+
+  CREATE TABLE IF NOT EXISTS google_drive_sync_state (
+    source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    last_synced_at TEXT,
+    last_full_scan_at TEXT,
+    last_error TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS google_drive_imported_objects (
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    drive_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    parent_id TEXT,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    modified_at TEXT,
+    version TEXT,
+    hash TEXT,
+    s3_key TEXT NOT NULL,
+    file_record_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    last_imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (source_id, drive_id, file_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_s3_key
+    ON google_drive_imported_objects(source_id, s3_key);
+  CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_file_record
+    ON google_drive_imported_objects(file_record_id);
+
+  PRAGMA foreign_keys=ON;
 `;
 
 export function closeDb(): void {

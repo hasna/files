@@ -11,12 +11,13 @@ import { createProject, listProjects, addToProject, deleteProject } from "../db/
 import { listPeers, addPeer, removePeer } from "../db/peers.js";
 import { loadConfig, setConfigValue, CONFIG_PATH_EXPORT } from "../lib/config.js";
 import { indexLocalSource } from "../lib/indexer.js";
+import { listGoogleDriveItems, listGoogleDriveSharedDrives, syncGoogleDriveSource } from "../lib/google-drive.js";
 import { indexS3Source, downloadFromS3, uploadToS3 } from "../lib/s3.js";
 import { DB_PATH, getDb } from "../db/database.js";
 import { requireId } from "../db/resolve.js";
 import { resolve, join } from "path";
 import { existsSync, readFileSync } from "fs";
-import type { S3Config } from "../types/index.js";
+import type { GoogleDriveConfig, S3Config } from "../types/index.js";
 
 import { createRequire } from "module";
 const _require = createRequire(import.meta.url);
@@ -113,6 +114,61 @@ sources
   });
 
 sources
+  .command("add-google-drive")
+  .description("Add a Google Drive source that imports files into an S3 source")
+  .requiredOption("--profile <profile>", "Google connector profile name")
+  .requiredOption("--destination-source <id>", "Destination S3 source ID")
+  .option("-n, --name <name>", "Source name")
+  .option("--include-my-drive", "Include My Drive files")
+  .option("--all-shared-drives", "Include all shared drives")
+  .option("--shared-drive <id>", "Shared drive ID to include", collectValues, [] as string[])
+  .option("--root-folder <id>", "Root folder ID to include", collectValues, [] as string[])
+  .option("--delete-behavior <mode>", "How to handle missing Drive files: ignore or mark_deleted", "ignore")
+  .action((opts: {
+    profile: string;
+    destinationSource: string;
+    name?: string;
+    includeMyDrive?: boolean;
+    allSharedDrives?: boolean;
+    sharedDrive: string[];
+    rootFolder: string[];
+    deleteBehavior: string;
+  }) => {
+    const machine = getCurrentMachine();
+    const destinationId = requireId(opts.destinationSource, "sources");
+    const destination = getSource(destinationId);
+    if (!destination || destination.type !== "s3") {
+      console.error(chalk.red("Destination source must be an S3 source"));
+      process.exit(1);
+    }
+    if (opts.deleteBehavior !== "ignore" && opts.deleteBehavior !== "mark_deleted") {
+      console.error(chalk.red("--delete-behavior must be one of: ignore, mark_deleted"));
+      process.exit(1);
+    }
+    if (!opts.includeMyDrive && !opts.allSharedDrives && opts.sharedDrive.length === 0) {
+      console.error(chalk.red("Select at least one Google Drive scope: --include-my-drive, --all-shared-drives, or --shared-drive <id>"));
+      process.exit(1);
+    }
+
+    const config: GoogleDriveConfig = {
+      profile: opts.profile,
+      include_my_drive: opts.includeMyDrive ?? false,
+      include_all_shared_drives: opts.allSharedDrives ?? false,
+      shared_drive_ids: opts.sharedDrive.length ? opts.sharedDrive : undefined,
+      root_folder_ids: opts.rootFolder.length ? opts.rootFolder : undefined,
+      destination_source_id: destinationId,
+      delete_behavior: opts.deleteBehavior as "ignore" | "mark_deleted",
+    };
+
+    const source = createSource({
+      name: opts.name ?? `Google Drive (${opts.profile})`,
+      type: "google_drive",
+      config,
+      machine_id: machine.id,
+    });
+    console.log(chalk.green(`✓ Google Drive source added: ${source.id}`));
+  });
+sources
   .command("rename <id> <name>")
   .description("Rename a source")
   .action((id: string, name: string) => {
@@ -182,7 +238,9 @@ program
       try {
         const stats = source.type === "s3"
           ? await indexS3Source(source, machine.id)
-          : await indexLocalSource(source, machine.id);
+          : source.type === "google_drive"
+            ? await syncGoogleDriveSource(source)
+            : await indexLocalSource(source, machine.id);
         console.log(
           chalk.green(`✓ ${source.name}`) +
           chalk.dim(` +${stats.added} ~${stats.updated} -${stats.deleted} errors:${stats.errors} (${stats.duration_ms}ms)`)
@@ -191,6 +249,58 @@ program
         console.error(chalk.red(`✗ ${source.name}: ${(e as Error).message}`));
       }
     }
+  });
+
+sources
+  .command("shared-drives <id>")
+  .description("List accessible Google shared drives for a source")
+  .option("--json", "Output as JSON")
+  .action(async (id: string, opts: { json?: boolean }) => {
+    const source = getSource(requireId(id, "sources"));
+    if (!source || source.type !== "google_drive") {
+      console.error(chalk.red("Source must be a Google Drive source"));
+      process.exit(1);
+    }
+    const drives = await listGoogleDriveSharedDrives(source);
+    if (opts.json) { console.log(JSON.stringify(drives, null, 2)); return; }
+    if (!drives.length) { console.log(chalk.dim("No shared drives found.")); return; }
+    for (const drive of drives) {
+      console.log(`${chalk.bold(drive.id)}  ${chalk.cyan(drive.name)}`);
+    }
+  });
+
+sources
+  .command("google-drive-items <id>")
+  .description("List Google Drive items visible to a source")
+  .option("--json", "Output as JSON")
+  .action(async (id: string, opts: { json?: boolean }) => {
+    const source = getSource(requireId(id, "sources"));
+    if (!source || source.type !== "google_drive") {
+      console.error(chalk.red("Source must be a Google Drive source"));
+      process.exit(1);
+    }
+    const items = await listGoogleDriveItems(source);
+    if (opts.json) { console.log(JSON.stringify(items, null, 2)); return; }
+    if (!items.length) { console.log(chalk.dim("No Google Drive items found.")); return; }
+    for (const item of items) {
+      console.log(`${chalk.bold(item.id)}  ${chalk.cyan(item.path)}  ${chalk.dim(item.drive_name)}`);
+    }
+  });
+
+sources
+  .command("sync-google-drive <id>")
+  .description("Import a Google Drive source into its configured S3 destination")
+  .action(async (id: string) => {
+    const source = getSource(requireId(id, "sources"));
+    if (!source || source.type !== "google_drive") {
+      console.error(chalk.red("Source must be a Google Drive source"));
+      process.exit(1);
+    }
+    const stats = await syncGoogleDriveSource(source);
+    console.log(
+      chalk.green(`✓ ${source.name}`) +
+      chalk.dim(` +${stats.added} ~${stats.updated} -${stats.deleted} errors:${stats.errors} (${stats.duration_ms}ms)`)
+    );
   });
 
 // ─── machines ───────────────────────────────────────────────────────────────
@@ -794,6 +904,11 @@ function getOpenCommand(fullPath: string): string[] {
   if (process.platform === "darwin") return ["open", fullPath];
   if (process.platform === "win32") return ["cmd", "/c", "start", "", fullPath];
   return ["xdg-open", fullPath];
+}
+
+function collectValues(value: string, values: string[]): string[] {
+  values.push(value);
+  return values;
 }
 
 function parseIntFlag(value: string, name: string, opts: { min?: number } = {}): number {

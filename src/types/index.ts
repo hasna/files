@@ -1,5 +1,33 @@
-export type SourceType = "local" | "s3";
+export type SourceType = "local" | "s3" | "google_drive";
 export type FileStatus = "active" | "deleted" | "moved";
+
+export interface S3Config {
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  sessionToken?: string;
+  endpoint?: string;
+}
+
+export interface GoogleDriveExportFormats {
+  document?: string;
+  spreadsheet?: string;
+  presentation?: string;
+  drawing?: string;
+}
+
+export interface GoogleDriveConfig {
+  profile: string;
+  include_my_drive: boolean;
+  include_all_shared_drives: boolean;
+  shared_drive_ids?: string[];
+  root_folder_ids?: string[];
+  destination_source_id: string;
+  path_mode?: "id_based" | "path_based";
+  delete_behavior?: "ignore" | "mark_deleted";
+  export_formats?: GoogleDriveExportFormats;
+}
+
+export type SourceConfig = S3Config | GoogleDriveConfig | Record<string, never>;
 
 export interface Machine {
   id: string;
@@ -12,13 +40,6 @@ export interface Machine {
   created_at: string;
 }
 
-export interface S3Config {
-  accessKeyId?: string;
-  secretAccessKey?: string;
-  sessionToken?: string;
-  endpoint?: string;
-}
-
 export interface Source {
   id: string;
   name: string;
@@ -27,7 +48,7 @@ export interface Source {
   bucket?: string;
   prefix?: string;
   region?: string;
-  config: S3Config;
+  config: SourceConfig;
   machine_id: string;
   enabled: boolean;
   last_indexed_at?: string;
@@ -156,4 +177,50 @@ export interface IndexStats {
   deleted: number;
   errors: number;
   duration_ms: number;
+}
+
+export interface GoogleDriveSharedDrive {
+  id: string;
+  name: string;
+}
+
+export interface GoogleDriveItem {
+  id: string;
+  drive_id: string;
+  drive_name: string;
+  is_shared_drive: boolean;
+  parent_id?: string;
+  path: string;
+  name: string;
+  mime: string;
+  size: number;
+  modified_at?: string;
+  hash?: string;
+  version?: string;
+  export_name?: string;
+}
+
+export interface GoogleDriveSyncState {
+  source_id: string;
+  last_synced_at?: string;
+  last_full_scan_at?: string;
+  last_error?: string;
+}
+
+export interface GoogleDriveImportedObject {
+  source_id: string;
+  drive_id: string;
+  file_id: string;
+  parent_id?: string;
+  path: string;
+  name: string;
+  mime: string;
+  size: number;
+  modified_at?: string;
+  version?: string;
+  hash?: string;
+  s3_key: string;
+  file_record_id: string;
+  deleted: boolean;
+  last_imported_at: string;
 }

@@ -630,13 +630,14 @@ server.tool("find_duplicates", "Find files with the same BLAKE3 hash (duplicates
 }, async ({ source_id }) => {
   const { getDb } = await import("../db/database.js");
   const db = getDb();
-  const sourceFilter = source_id ? `AND source_id = '${source_id}'` : "";
-  const groups = db.query<{ hash: string; cnt: number; paths: string }, []>(`
+  const sourceFilter = source_id ? "AND source_id = ?" : "";
+  const params = source_id ? [source_id] : [];
+  const groups = db.query<{ hash: string; cnt: number; paths: string }, unknown[]>(`
     SELECT hash, COUNT(*) as cnt, GROUP_CONCAT(path, ' | ') as paths
     FROM files WHERE status='active' AND hash IS NOT NULL ${sourceFilter}
     GROUP BY hash HAVING cnt > 1
     ORDER BY cnt DESC
-  `).all();
+  `).all(params);
   return { content: [{ type: "text", text: JSON.stringify(groups, null, 2) }] };
 });
 

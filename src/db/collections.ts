@@ -64,7 +64,7 @@ export function listCollections(parent_id?: string): Collection[] {
       "SELECT * FROM collections WHERE parent_id = ? ORDER BY name"
     ).all(parent_id).map(toCollection);
   }
-  return db.query<CollectionRow, []>("SELECT * FROM collections ORDER BY name").all().map(toCollection);
+  return db.query<CollectionRow, []>("SELECT * FROM collections WHERE parent_id IS NULL ORDER BY name").all().map(toCollection);
 }
 
 export function getCollection(id: string): (Collection & { file_count: number; children: Collection[] }) | null {
