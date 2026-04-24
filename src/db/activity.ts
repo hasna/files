@@ -1,6 +1,7 @@
 import { getDb } from "./database.js";
 import { nanoid } from "nanoid";
 import type { AgentActivity, ActionType } from "../types/index.js";
+import type { SQLQueryBindings } from "bun:sqlite";
 
 interface ActivityRow {
   id: string;
@@ -61,49 +62,49 @@ interface ActivityQueryOpts {
 export function getFileHistory(file_id: string, opts: ActivityQueryOpts = {}): AgentActivity[] {
   const db = getDb();
   const conditions: string[] = ["file_id = ?"];
-  const params: unknown[] = [file_id];
+  const params: SQLQueryBindings[] = [file_id];
   applyFilters(conditions, params, opts);
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
   return db
-    .query<ActivityRow, unknown[]>(
+    .query<ActivityRow, SQLQueryBindings[]>(
       `SELECT * FROM agent_activity WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ? OFFSET ?`
     )
-    .all([...params, limit, offset])
+    .all(...params, limit, offset)
     .map(toActivity);
 }
 
 export function getAgentActivity(agent_id: string, opts: ActivityQueryOpts = {}): AgentActivity[] {
   const db = getDb();
   const conditions: string[] = ["agent_id = ?"];
-  const params: unknown[] = [agent_id];
+  const params: SQLQueryBindings[] = [agent_id];
   applyFilters(conditions, params, opts);
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
   return db
-    .query<ActivityRow, unknown[]>(
+    .query<ActivityRow, SQLQueryBindings[]>(
       `SELECT * FROM agent_activity WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ? OFFSET ?`
     )
-    .all([...params, limit, offset])
+    .all(...params, limit, offset)
     .map(toActivity);
 }
 
 export function getSessionActivity(session_id: string, opts: ActivityQueryOpts = {}): AgentActivity[] {
   const db = getDb();
   const conditions: string[] = ["session_id = ?"];
-  const params: unknown[] = [session_id];
+  const params: SQLQueryBindings[] = [session_id];
   applyFilters(conditions, params, opts);
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
   return db
-    .query<ActivityRow, unknown[]>(
+    .query<ActivityRow, SQLQueryBindings[]>(
       `SELECT * FROM agent_activity WHERE ${conditions.join(" AND ")} ORDER BY created_at DESC LIMIT ? OFFSET ?`
     )
-    .all([...params, limit, offset])
+    .all(...params, limit, offset)
     .map(toActivity);
 }
 
-function applyFilters(conditions: string[], params: unknown[], opts: ActivityQueryOpts): void {
+function applyFilters(conditions: string[], params: SQLQueryBindings[], opts: ActivityQueryOpts): void {
   if (opts.after) { conditions.push("created_at >= ?"); params.push(opts.after); }
   if (opts.before) { conditions.push("created_at <= ?"); params.push(opts.before); }
   if (opts.action) { conditions.push("action = ?"); params.push(opts.action); }

@@ -16,6 +16,7 @@ import { upsertFile, listFiles } from "../db/files.js";
 import { getDb } from "../db/database.js";
 import { markSourceIndexed } from "../db/sources.js";
 import type { Source, IndexStats, S3Config } from "../types/index.js";
+import type { StreamingBlobPayloadInputTypes } from "@smithy/types";
 
 function makeClient(source: Source): S3Client {
   const cfg = source.config as S3Config;
@@ -136,7 +137,7 @@ export async function uploadToS3(source: Source, localPath: string, s3Key?: stri
 
 export async function uploadBufferToS3(
   source: Source,
-  body: ArrayBuffer | Uint8Array | Buffer | NodeJS.ReadableStream,
+  body: StreamingBlobPayloadInputTypes,
   s3Key: string,
   contentType = "application/octet-stream",
   contentLength?: number,

@@ -67,6 +67,7 @@ function migrate(db: Database): void {
     { version: 7, sql: migration_v7 },
     { version: 8, sql: migration_v8 },
     { version: 9, sql: migration_v9 },
+    { version: 10, sql: migration_v10 },
   ];
 
   for (const m of migrations) {
@@ -279,6 +280,7 @@ const migration_v8 = `
 // v9: google drive sources + import state
 const migration_v9 = `
   PRAGMA foreign_keys=OFF;
+  PRAGMA legacy_alter_table=ON;
 
   ALTER TABLE sources RENAME TO sources_old;
 
@@ -344,7 +346,90 @@ const migration_v9 = `
   CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_file_record
     ON google_drive_imported_objects(file_record_id);
 
+  PRAGMA legacy_alter_table=OFF;
   PRAGMA foreign_keys=ON;
+`;
+
+// v10: destination-aware google drive imports (S3 default, local override)
+const migration_v10 = `
+  CREATE TABLE IF NOT EXISTS sources_old (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('local', 's3', 'google_drive')),
+    path TEXT,
+    bucket TEXT,
+    prefix TEXT,
+    region TEXT,
+    config TEXT NOT NULL DEFAULT '{}',
+    machine_id TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_indexed_at TEXT,
+    file_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  INSERT OR REPLACE INTO sources_old (
+    id, name, type, path, bucket, prefix, region, config, machine_id,
+    enabled, last_indexed_at, file_count, created_at, updated_at
+  )
+  SELECT
+    id, name, type, path, bucket, prefix, region, config, machine_id,
+    enabled, last_indexed_at, file_count, created_at, updated_at
+  FROM sources;
+
+  CREATE TRIGGER IF NOT EXISTS trg_sources_old_insert
+  AFTER INSERT ON sources
+  BEGIN
+    INSERT OR REPLACE INTO sources_old (
+      id, name, type, path, bucket, prefix, region, config, machine_id,
+      enabled, last_indexed_at, file_count, created_at, updated_at
+    )
+    VALUES (
+      NEW.id, NEW.name, NEW.type, NEW.path, NEW.bucket, NEW.prefix, NEW.region, NEW.config, NEW.machine_id,
+      NEW.enabled, NEW.last_indexed_at, NEW.file_count, NEW.created_at, NEW.updated_at
+    );
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS trg_sources_old_update
+  AFTER UPDATE ON sources
+  BEGIN
+    UPDATE sources_old
+    SET name = NEW.name,
+        type = NEW.type,
+        path = NEW.path,
+        bucket = NEW.bucket,
+        prefix = NEW.prefix,
+        region = NEW.region,
+        config = NEW.config,
+        machine_id = NEW.machine_id,
+        enabled = NEW.enabled,
+        last_indexed_at = NEW.last_indexed_at,
+        file_count = NEW.file_count,
+        created_at = NEW.created_at,
+        updated_at = NEW.updated_at
+    WHERE id = NEW.id;
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS trg_sources_old_delete
+  AFTER DELETE ON sources
+  BEGIN
+    DELETE FROM sources_old WHERE id = OLD.id;
+  END;
+
+  ALTER TABLE google_drive_imported_objects ADD COLUMN profile TEXT;
+  ALTER TABLE google_drive_imported_objects ADD COLUMN storage_type TEXT NOT NULL DEFAULT 's3';
+  ALTER TABLE google_drive_imported_objects ADD COLUMN storage_key TEXT;
+  ALTER TABLE google_drive_imported_objects ADD COLUMN destination_source_id TEXT REFERENCES sources(id) ON DELETE SET NULL;
+
+  UPDATE google_drive_imported_objects
+  SET storage_key = s3_key
+  WHERE storage_key IS NULL;
+
+  CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_storage
+    ON google_drive_imported_objects(source_id, storage_type, storage_key);
+  CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_destination
+    ON google_drive_imported_objects(destination_source_id);
 `;
 
 export function closeDb(): void {

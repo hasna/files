@@ -70,6 +70,12 @@ export default function App() {
     setIndexing(null);
   };
 
+  const sourceLocation = (source: Source) => {
+    if (source.type === "s3") return `s3://${source.bucket}${source.prefix ? `/${source.prefix}` : ""}`;
+    if (source.type === "google_drive") return `google-drive:${source.config?.profile ?? "default"}`;
+    return source.path;
+  };
+
   const navItem = (v: View, icon: React.ReactNode, label: string) => (
     <button
       onClick={() => setView(v)}
@@ -200,7 +206,7 @@ export default function App() {
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-white">{s.name}</div>
                     <div className="text-xs text-slate-400 truncate font-mono">
-                      {s.type === "s3" ? `s3://${s.bucket}${s.prefix ? `/${s.prefix}` : ""}` : s.path}
+                      {sourceLocation(s)}
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5">
                       {s.file_count} files · {s.type.toUpperCase()} · {s.enabled ? "enabled" : "disabled"}

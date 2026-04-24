@@ -21,7 +21,7 @@ export interface GoogleDriveConfig {
   include_all_shared_drives: boolean;
   shared_drive_ids?: string[];
   root_folder_ids?: string[];
-  destination_source_id: string;
+  destination_source_id?: string;
   path_mode?: "id_based" | "path_based";
   delete_behavior?: "ignore" | "mark_deleted";
   export_formats?: GoogleDriveExportFormats;
@@ -211,6 +211,7 @@ export interface GoogleDriveImportedObject {
   source_id: string;
   drive_id: string;
   file_id: string;
+  profile?: string;
   parent_id?: string;
   path: string;
   name: string;
@@ -219,7 +220,10 @@ export interface GoogleDriveImportedObject {
   modified_at?: string;
   version?: string;
   hash?: string;
-  s3_key: string;
+  storage_type?: "s3" | "local";
+  storage_key?: string;
+  destination_source_id?: string;
+  s3_key?: string;
   file_record_id: string;
   deleted: boolean;
   last_imported_at: string;

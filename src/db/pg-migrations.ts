@@ -23,7 +23,7 @@ export const PG_MIGRATIONS: string[] = [
   `CREATE TABLE IF NOT EXISTS sources (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('local', 's3')),
+    type TEXT NOT NULL CHECK(type IN ('local', 's3', 'google_drive')),
     path TEXT,
     bucket TEXT,
     prefix TEXT,
@@ -184,4 +184,45 @@ export const PG_MIGRATIONS: string[] = [
 
   // Migration 19: file descriptions
   `ALTER TABLE files ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`,
+
+  // Migration 20: Google Drive sources + destination-aware imports
+  `ALTER TABLE sources DROP CONSTRAINT IF EXISTS sources_type_check`,
+  `ALTER TABLE sources ADD CONSTRAINT sources_type_check CHECK(type IN ('local', 's3', 'google_drive'))`,
+  `CREATE TABLE IF NOT EXISTS google_drive_sync_state (
+    source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    last_synced_at TEXT,
+    last_full_scan_at TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL DEFAULT NOW()::text
+  )`,
+  `CREATE TABLE IF NOT EXISTS google_drive_imported_objects (
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    drive_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    profile TEXT,
+    parent_id TEXT,
+    path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL DEFAULT 0,
+    modified_at TEXT,
+    version TEXT,
+    hash TEXT,
+    storage_type TEXT NOT NULL DEFAULT 's3' CHECK(storage_type IN ('s3', 'local')),
+    storage_key TEXT,
+    destination_source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
+    s3_key TEXT NOT NULL DEFAULT '',
+    file_record_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    last_imported_at TEXT NOT NULL,
+    PRIMARY KEY (source_id, drive_id, file_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_s3_key
+    ON google_drive_imported_objects(source_id, s3_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_file_record
+    ON google_drive_imported_objects(file_record_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_storage
+    ON google_drive_imported_objects(source_id, storage_type, storage_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_google_drive_imported_objects_destination
+    ON google_drive_imported_objects(destination_source_id)`,
 ];

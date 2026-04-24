@@ -11,6 +11,7 @@ import { tagFile, untagFile, listTags, deleteTag } from "../db/tags.js";
 import { createCollection, updateCollection, listCollections, getCollection, deleteCollection, addToCollection, removeFromCollection, autoPopulateCollection } from "../db/collections.js";
 import { createProject, updateProject, listProjects, getProject, deleteProject, addToProject, removeFromProject } from "../db/projects.js";
 import { indexLocalSource } from "../lib/indexer.js";
+import { listGoogleDriveItems, listGoogleDriveProfiles, syncGoogleDriveSource } from "../lib/google-drive.js";
 import { indexS3Source, downloadFromS3, uploadToS3, getPresignedUrl } from "../lib/s3.js";
 import { registerAgent, getAgent, listAgents as listDbAgents, updateAgentHeartbeat, setAgentFocus } from "../db/agents.js";
 import { logActivity, getFileHistory, getAgentActivity, getSessionActivity } from "../db/activity.js";
@@ -18,7 +19,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { createRequire } from "module";
-import type { S3Config } from "../types/index.js";
+import type { GoogleDriveConfig, S3Config } from "../types/index.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../../package.json") as { version: string };
@@ -28,16 +29,27 @@ const server = new McpServer({
   version: pkg.version,
 });
 
+type ToolHandler = (params: any) => unknown | Promise<unknown>;
+
+function registerTool(
+  name: string,
+  description: string,
+  inputSchema: Record<string, z.ZodTypeAny>,
+  handler: ToolHandler,
+): void {
+  (server.tool as any)(name, description, inputSchema, handler);
+}
+
 // ─── Sources ──────────────────────────────────────────────────────────────────
 
-server.tool("list_sources", "List all configured file sources", {
+registerTool("list_sources", "List all configured file sources", {
   machine_id: z.string().optional().describe("Filter by machine ID"),
 }, async ({ machine_id }) => {
   const sources = listSources(machine_id);
   return { content: [{ type: "text", text: JSON.stringify(sources, null, 2) }] };
 });
 
-server.tool("add_source", "Add a local folder or S3 bucket as an indexed source", {
+registerTool("add_source", "Add a local folder or S3 bucket as an indexed source", {
   type: z.enum(["local", "s3"]).describe("Source type"),
   path: z.string().optional().describe("Local folder path (required for local)"),
   bucket: z.string().optional().describe("S3 bucket name (required for s3)"),
@@ -65,14 +77,86 @@ server.tool("add_source", "Add a local folder or S3 bucket as an indexed source"
   return { content: [{ type: "text", text: JSON.stringify(source, null, 2) }] };
 });
 
-server.tool("remove_source", "Remove a source and all its indexed file records", {
+registerTool("list_google_drive_profiles", "List Google Drive profiles available through connectors auth", {}, async () => {
+  return { content: [{ type: "text", text: JSON.stringify(listGoogleDriveProfiles(), null, 2) }] };
+});
+
+registerTool("add_google_drive_source", "Add a Google Drive source that syncs into the default S3 source or a configured local/S3 destination", {
+  profile: z.string().describe("Google Drive connector profile name"),
+  destination_source_id: z.string().optional().describe("Destination S3 or local source ID. Omit to use the configured/default S3 source."),
+  name: z.string().optional(),
+  include_my_drive: z.boolean().optional().default(true),
+  include_all_shared_drives: z.boolean().optional().default(true),
+  shared_drive_ids: z.array(z.string()).optional(),
+  root_folder_ids: z.array(z.string()).optional(),
+  path_mode: z.enum(["path_based", "id_based"]).optional().default("path_based"),
+  delete_behavior: z.enum(["ignore", "mark_deleted"]).optional().default("ignore"),
+}, async (params) => {
+  if (params.destination_source_id) {
+    const destination = getSource(params.destination_source_id);
+    if (!destination || (destination.type !== "s3" && destination.type !== "local")) {
+      return { content: [{ type: "text" as const, text: "Destination source must be an S3 or local source" }], isError: true };
+    }
+  }
+
+  const machine = getCurrentMachine();
+  const config: GoogleDriveConfig = {
+    profile: params.profile,
+    include_my_drive: params.include_my_drive,
+    include_all_shared_drives: params.include_all_shared_drives,
+    shared_drive_ids: params.shared_drive_ids?.length ? params.shared_drive_ids : undefined,
+    root_folder_ids: params.root_folder_ids?.length ? params.root_folder_ids : undefined,
+    destination_source_id: params.destination_source_id,
+    path_mode: params.path_mode,
+    delete_behavior: params.delete_behavior,
+  };
+  const source = createSource({
+    name: params.name ?? `Google Drive (${params.profile})`,
+    type: "google_drive",
+    config,
+    machine_id: machine.id,
+  });
+  return { content: [{ type: "text", text: JSON.stringify(source, null, 2) }] };
+});
+
+registerTool("list_google_drive_items", "List Google Drive items visible to a Google Drive source", {
+  source_id: z.string().describe("Google Drive source ID"),
+}, async ({ source_id }) => {
+  const source = getSource(source_id);
+  if (!source || source.type !== "google_drive") {
+    return { content: [{ type: "text" as const, text: "Source must be a Google Drive source" }], isError: true };
+  }
+  const items = await listGoogleDriveItems(source);
+  return { content: [{ type: "text", text: JSON.stringify(items, null, 2) }] };
+});
+
+registerTool("sync_google_drive", "Sync one Google Drive source, or all enabled Google Drive sources when source_id is omitted", {
+  source_id: z.string().optional().describe("Google Drive source ID"),
+  agent_id: z.string().optional().describe("Agent ID for activity tracking"),
+}, async ({ source_id, agent_id }) => {
+  const sources = source_id
+    ? [getSource(source_id)].filter(Boolean)
+    : listSources().filter((source) => source.enabled && source.type === "google_drive");
+  const results = [];
+  for (const source of sources) {
+    if (!source || source.type !== "google_drive") {
+      return { content: [{ type: "text" as const, text: "Source must be a Google Drive source" }], isError: true };
+    }
+    const stats = await syncGoogleDriveSource(source);
+    results.push({ name: source.name, ...stats });
+    if (agent_id) logActivity({ agent_id, action: "import", source_id: source.id, metadata: { stats } });
+  }
+  return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+});
+
+registerTool("remove_source", "Remove a source and all its indexed file records", {
   id: z.string().describe("Source ID"),
 }, async ({ id }) => {
   const ok = deleteSource(id);
   return { content: [{ type: "text", text: ok ? `Source ${id} removed` : `Source not found: ${id}` }] };
 });
 
-server.tool("index_source", "Re-index a source (or all sources on this machine)", {
+registerTool("index_source", "Re-index a source (or all sources on this machine)", {
   source_id: z.string().optional().describe("Source ID — omit to index all enabled sources"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
 }, async ({ source_id, agent_id }) => {
@@ -87,7 +171,9 @@ server.tool("index_source", "Re-index a source (or all sources on this machine)"
     try {
       const stats = source.type === "s3"
         ? await indexS3Source(source, machine.id)
-        : await indexLocalSource(source, machine.id);
+        : source.type === "google_drive"
+          ? await syncGoogleDriveSource(source)
+          : await indexLocalSource(source, machine.id);
       results.push({ name: source.name, ...stats });
       if (agent_id) logActivity({ agent_id, action: "index", source_id: source.id, metadata: { stats } });
     } catch (e) {
@@ -99,7 +185,7 @@ server.tool("index_source", "Re-index a source (or all sources on this machine)"
 
 // ─── Files ────────────────────────────────────────────────────────────────────
 
-server.tool("list_files", "List indexed files with optional filters. If agent_id is set and agent has a focused project, auto-applies project filter.", {
+registerTool("list_files", "List indexed files with optional filters. If agent_id is set and agent has a focused project, auto-applies project filter.", {
   source_id: z.string().optional(),
   machine_id: z.string().optional(),
   tag: z.string().optional(),
@@ -126,7 +212,7 @@ server.tool("list_files", "List indexed files with optional filters. If agent_id
   return { content: [{ type: "text", text: JSON.stringify(files, null, 2) }] };
 });
 
-server.tool("search_files", "Full-text search across file names, paths, and tags", {
+registerTool("search_files", "Full-text search across file names, paths, and tags", {
   query: z.string().describe("Search query"),
   source_id: z.string().optional(),
   machine_id: z.string().optional(),
@@ -143,7 +229,7 @@ server.tool("search_files", "Full-text search across file names, paths, and tags
   return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
 });
 
-server.tool("get_file", "Get full details for a file by ID", {
+registerTool("get_file", "Get full details for a file by ID", {
   id: z.string().describe("File ID"),
 }, async ({ id }) => {
   const file = getFile(id);
@@ -151,7 +237,7 @@ server.tool("get_file", "Get full details for a file by ID", {
   return { content: [{ type: "text", text: JSON.stringify(file, null, 2) }] };
 });
 
-server.tool("download_file", "Download a file from S3 to a local path", {
+registerTool("download_file", "Download a file from S3 to a local path", {
   id: z.string().describe("File ID"),
   dest: z.string().optional().describe("Destination path (defaults to ~/Downloads/<filename>)"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -173,7 +259,7 @@ server.tool("download_file", "Download a file from S3 to a local path", {
   return { content: [{ type: "text", text: `Downloaded to: ${outPath}` }] };
 });
 
-server.tool("upload_file", "Upload a local file to an S3 source", {
+registerTool("upload_file", "Upload a local file to an S3 source", {
   local_path: z.string().describe("Path to local file"),
   source_id: z.string().describe("Target S3 source ID"),
   s3_key: z.string().optional().describe("Custom S3 key (defaults to prefix/filename)"),
@@ -193,11 +279,11 @@ server.tool("upload_file", "Upload a local file to an S3 source", {
 
 // ─── Tags ─────────────────────────────────────────────────────────────────────
 
-server.tool("list_tags", "List all tags", {}, async () => {
+registerTool("list_tags", "List all tags", {}, async () => {
   return { content: [{ type: "text", text: JSON.stringify(listTags(), null, 2) }] };
 });
 
-server.tool("tag_file", "Add one or more tags to a file", {
+registerTool("tag_file", "Add one or more tags to a file", {
   file_id: z.string(),
   tags: z.array(z.string()).describe("Tag names to add"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -207,7 +293,7 @@ server.tool("tag_file", "Add one or more tags to a file", {
   return { content: [{ type: "text", text: `Tagged file ${file_id} with: ${tags.join(", ")}` }] };
 });
 
-server.tool("untag_file", "Remove tags from a file", {
+registerTool("untag_file", "Remove tags from a file", {
   file_id: z.string(),
   tags: z.array(z.string()),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -217,7 +303,7 @@ server.tool("untag_file", "Remove tags from a file", {
   return { content: [{ type: "text", text: "Tags removed" }] };
 });
 
-server.tool("delete_tag", "Delete a tag entirely (removes from all files)", {
+registerTool("delete_tag", "Delete a tag entirely (removes from all files)", {
   id: z.string().describe("Tag ID"),
 }, async ({ id }) => {
   const ok = deleteTag(id);
@@ -226,13 +312,13 @@ server.tool("delete_tag", "Delete a tag entirely (removes from all files)", {
 
 // ─── Collections ──────────────────────────────────────────────────────────────
 
-server.tool("list_collections", "List all collections", {
+registerTool("list_collections", "List all collections", {
   parent_id: z.string().optional().describe("Filter by parent collection ID"),
 }, async ({ parent_id }) => {
   return { content: [{ type: "text", text: JSON.stringify(listCollections(parent_id), null, 2) }] };
 });
 
-server.tool("create_collection", "Create a new collection (supports nesting and auto-rules)", {
+registerTool("create_collection", "Create a new collection (supports nesting and auto-rules)", {
   name: z.string(),
   description: z.string().optional().default(""),
   parent_id: z.string().optional().describe("Parent collection ID for nesting"),
@@ -247,7 +333,7 @@ server.tool("create_collection", "Create a new collection (supports nesting and 
   return { content: [{ type: "text", text: JSON.stringify(c, null, 2) }] };
 });
 
-server.tool("update_collection", "Update a collection's name, description, parent, or rules", {
+registerTool("update_collection", "Update a collection's name, description, parent, or rules", {
   id: z.string().describe("Collection ID"),
   name: z.string().optional(),
   description: z.string().optional(),
@@ -264,7 +350,7 @@ server.tool("update_collection", "Update a collection's name, description, paren
   return { content: [{ type: "text", text: JSON.stringify(c, null, 2) }] };
 });
 
-server.tool("get_collection", "Get collection details with file count and child collections", {
+registerTool("get_collection", "Get collection details with file count and child collections", {
   id: z.string().describe("Collection ID"),
 }, async ({ id }) => {
   const c = getCollection(id);
@@ -272,14 +358,14 @@ server.tool("get_collection", "Get collection details with file count and child 
   return { content: [{ type: "text", text: JSON.stringify(c, null, 2) }] };
 });
 
-server.tool("auto_populate_collection", "Run a collection's auto-rules and add all matching files", {
+registerTool("auto_populate_collection", "Run a collection's auto-rules and add all matching files", {
   collection_id: z.string().describe("Collection ID"),
 }, async ({ collection_id }) => {
   const added = autoPopulateCollection(collection_id);
   return { content: [{ type: "text", text: `Added ${added} file(s) to collection` }] };
 });
 
-server.tool("add_to_collection", "Add a file to a collection", {
+registerTool("add_to_collection", "Add a file to a collection", {
   collection_id: z.string(),
   file_id: z.string(),
 }, async ({ collection_id, file_id }) => {
@@ -287,7 +373,7 @@ server.tool("add_to_collection", "Add a file to a collection", {
   return { content: [{ type: "text", text: "Added to collection" }] };
 });
 
-server.tool("remove_from_collection", "Remove a file from a collection", {
+registerTool("remove_from_collection", "Remove a file from a collection", {
   collection_id: z.string(),
   file_id: z.string(),
 }, async ({ collection_id, file_id }) => {
@@ -295,7 +381,7 @@ server.tool("remove_from_collection", "Remove a file from a collection", {
   return { content: [{ type: "text", text: "Removed from collection" }] };
 });
 
-server.tool("delete_collection", "Delete a collection (does not delete files, only the collection)", {
+registerTool("delete_collection", "Delete a collection (does not delete files, only the collection)", {
   id: z.string().describe("Collection ID"),
 }, async ({ id }) => {
   const ok = deleteCollection(id);
@@ -304,13 +390,13 @@ server.tool("delete_collection", "Delete a collection (does not delete files, on
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
-server.tool("list_projects", "List all projects", {
+registerTool("list_projects", "List all projects", {
   status: z.enum(["active", "archived", "completed"]).optional().describe("Filter by status"),
 }, async ({ status }) => {
   return { content: [{ type: "text", text: JSON.stringify(listProjects(status), null, 2) }] };
 });
 
-server.tool("create_project", "Create a new project", {
+registerTool("create_project", "Create a new project", {
   name: z.string(),
   description: z.string().optional().default(""),
   status: z.enum(["active", "archived", "completed"]).optional().default("active"),
@@ -319,7 +405,7 @@ server.tool("create_project", "Create a new project", {
   return { content: [{ type: "text", text: JSON.stringify(p, null, 2) }] };
 });
 
-server.tool("update_project", "Update a project's name, description, status, or metadata", {
+registerTool("update_project", "Update a project's name, description, status, or metadata", {
   id: z.string().describe("Project ID"),
   name: z.string().optional(),
   description: z.string().optional(),
@@ -330,7 +416,7 @@ server.tool("update_project", "Update a project's name, description, status, or 
   return { content: [{ type: "text", text: JSON.stringify(p, null, 2) }] };
 });
 
-server.tool("get_project", "Get project details with file count", {
+registerTool("get_project", "Get project details with file count", {
   id: z.string().describe("Project ID"),
 }, async ({ id }) => {
   const p = getProject(id);
@@ -338,7 +424,7 @@ server.tool("get_project", "Get project details with file count", {
   return { content: [{ type: "text", text: JSON.stringify(p, null, 2) }] };
 });
 
-server.tool("add_to_project", "Add a file to a project", {
+registerTool("add_to_project", "Add a file to a project", {
   project_id: z.string(),
   file_id: z.string(),
 }, async ({ project_id, file_id }) => {
@@ -346,7 +432,7 @@ server.tool("add_to_project", "Add a file to a project", {
   return { content: [{ type: "text", text: "Added to project" }] };
 });
 
-server.tool("remove_from_project", "Remove a file from a project", {
+registerTool("remove_from_project", "Remove a file from a project", {
   project_id: z.string(),
   file_id: z.string(),
 }, async ({ project_id, file_id }) => {
@@ -354,7 +440,7 @@ server.tool("remove_from_project", "Remove a file from a project", {
   return { content: [{ type: "text", text: "Removed from project" }] };
 });
 
-server.tool("delete_project", "Delete a project (does not delete files, only the project)", {
+registerTool("delete_project", "Delete a project (does not delete files, only the project)", {
   id: z.string().describe("Project ID"),
 }, async ({ id }) => {
   const ok = deleteProject(id);
@@ -363,13 +449,13 @@ server.tool("delete_project", "Delete a project (does not delete files, only the
 
 // ─── Machines ─────────────────────────────────────────────────────────────────
 
-server.tool("list_machines", "List all known machines that have indexed files", {}, async () => {
+registerTool("list_machines", "List all known machines that have indexed files", {}, async () => {
   return { content: [{ type: "text", text: JSON.stringify(listMachines(), null, 2) }] };
 });
 
 // ─── get_file_url ─────────────────────────────────────────────────────────────
 
-server.tool("get_file_url", "Get a pre-signed URL for temporary access to an S3 file", {
+registerTool("get_file_url", "Get a pre-signed URL for temporary access to an S3 file", {
   id: z.string().describe("File ID"),
   expires_in: z.number().optional().default(3600).describe("URL expiry in seconds (default 1 hour)"),
 }, async ({ id, expires_in }) => {
@@ -384,7 +470,7 @@ server.tool("get_file_url", "Get a pre-signed URL for temporary access to an S3 
 
 // ─── get_file_content ─────────────────────────────────────────────────────────
 
-server.tool("get_file_content", "Read the content of a text file (local or S3 sources, max 1MB)", {
+registerTool("get_file_content", "Read the content of a text file (local or S3 sources, max 1MB)", {
   id: z.string().describe("File ID"),
   max_bytes: z.number().optional().default(102400).describe("Max bytes to read (default 100KB)"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -408,7 +494,7 @@ server.tool("get_file_content", "Read the content of a text file (local or S3 so
   } else if (source.type === "s3") {
     try {
       const { GetObjectCommand, S3Client } = await import("@aws-sdk/client-s3");
-      const cfg = source.config;
+      const cfg = source.config as S3Config;
       const client = new S3Client({
         region: source.region ?? "us-east-1",
         ...(cfg.endpoint ? { endpoint: cfg.endpoint } : {}),
@@ -441,7 +527,7 @@ server.tool("get_file_content", "Read the content of a text file (local or S3 so
 
 // ─── bulk_tag ─────────────────────────────────────────────────────────────────
 
-server.tool("bulk_tag", "Add tags to multiple files at once (by IDs or search query)", {
+registerTool("bulk_tag", "Add tags to multiple files at once (by IDs or search query)", {
   tags: z.array(z.string()).describe("Tag names to add"),
   file_ids: z.array(z.string()).optional().describe("List of file IDs to tag"),
   query: z.string().optional().describe("Search query — tag all matching files"),
@@ -463,7 +549,7 @@ server.tool("bulk_tag", "Add tags to multiple files at once (by IDs or search qu
 
 // ─── describe_file ────────────────────────────────────────────────────────────
 
-server.tool("describe_file", "Get file metadata + first lines of content in one call", {
+registerTool("describe_file", "Get file metadata + first lines of content in one call", {
   id: z.string().describe("File ID"),
   lines: z.number().optional().default(50).describe("Number of lines to preview (default 50)"),
 }, async ({ id, lines }) => {
@@ -494,7 +580,7 @@ server.tool("describe_file", "Get file metadata + first lines of content in one 
 
 // ─── File Operations ─────────────────────────────────────────────────────────
 
-server.tool("move_file", "Move a file to a different path within the same source", {
+registerTool("move_file", "Move a file to a different path within the same source", {
   file_id: z.string().describe("File ID"),
   dest_path: z.string().describe("New path within the source"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -519,7 +605,7 @@ server.tool("move_file", "Move a file to a different path within the same source
   return { content: [{ type: "text" as const, text: `Moved ${file.path} → ${dest_path}` }] };
 });
 
-server.tool("copy_file", "Copy a file to another source (local→S3, S3→local, etc.)", {
+registerTool("copy_file", "Copy a file to another source (local→S3, S3→local, etc.)", {
   file_id: z.string().describe("File ID to copy"),
   dest_source_id: z.string().describe("Destination source ID"),
   dest_path: z.string().optional().describe("Custom destination path"),
@@ -562,7 +648,7 @@ server.tool("copy_file", "Copy a file to another source (local→S3, S3→local,
   return { content: [{ type: "text" as const, text: `Copied ${file.name} to ${dstSource.name}/${finalDest}` }] };
 });
 
-server.tool("rename_file", "Rename a file and regenerate its canonical name", {
+registerTool("rename_file", "Rename a file and regenerate its canonical name", {
   file_id: z.string().describe("File ID"),
   new_name: z.string().describe("New file name"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -584,7 +670,7 @@ server.tool("rename_file", "Rename a file and regenerate its canonical name", {
   return { content: [{ type: "text" as const, text: `Renamed to ${new_name} (canonical: ${canonical})` }] };
 });
 
-server.tool("delete_file", "Soft-delete a file (or hard-delete from disk/S3)", {
+registerTool("delete_file", "Soft-delete a file (or hard-delete from disk/S3)", {
   file_id: z.string().describe("File ID"),
   hard_delete: z.boolean().optional().default(false).describe("true = remove from disk/S3, false = soft delete (default)"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -610,7 +696,7 @@ server.tool("delete_file", "Soft-delete a file (or hard-delete from disk/S3)", {
   return { content: [{ type: "text" as const, text: `${hard_delete ? "Hard" : "Soft"}-deleted ${file.name}` }] };
 });
 
-server.tool("restore_file", "Restore a soft-deleted file", {
+registerTool("restore_file", "Restore a soft-deleted file", {
   file_id: z.string().describe("File ID"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
 }, async ({ file_id, agent_id }) => {
@@ -625,25 +711,25 @@ server.tool("restore_file", "Restore a soft-deleted file", {
 
 // ─── find_duplicates ──────────────────────────────────────────────────────────
 
-server.tool("find_duplicates", "Find files with the same BLAKE3 hash (duplicates)", {
+registerTool("find_duplicates", "Find files with the same BLAKE3 hash (duplicates)", {
   source_id: z.string().optional().describe("Limit to a specific source"),
 }, async ({ source_id }) => {
   const { getDb } = await import("../db/database.js");
   const db = getDb();
   const sourceFilter = source_id ? "AND source_id = ?" : "";
-  const params = source_id ? [source_id] : [];
-  const groups = db.query<{ hash: string; cnt: number; paths: string }, unknown[]>(`
+  const params = source_id ? [source_id] as import("bun:sqlite").SQLQueryBindings[] : [];
+  const groups = db.query<{ hash: string; cnt: number; paths: string }, import("bun:sqlite").SQLQueryBindings[]>(`
     SELECT hash, COUNT(*) as cnt, GROUP_CONCAT(path, ' | ') as paths
     FROM files WHERE status='active' AND hash IS NOT NULL ${sourceFilter}
     GROUP BY hash HAVING cnt > 1
     ORDER BY cnt DESC
-  `).all(params);
+  `).all(...params);
   return { content: [{ type: "text", text: JSON.stringify(groups, null, 2) }] };
 });
 
 // ─── get_stats ────────────────────────────────────────────────────────────────
 
-server.tool("get_stats", "Get aggregate statistics about all indexed files", {}, async () => {
+registerTool("get_stats", "Get aggregate statistics about all indexed files", {}, async () => {
   const { getDb: getStatsDb } = await import("../db/database.js");
   const db = getStatsDb();
 
@@ -678,7 +764,7 @@ server.tool("get_stats", "Get aggregate statistics about all indexed files", {},
 
 // ─── annotate_file ────────────────────────────────────────────────────────────
 
-server.tool("annotate_file", "Add or update a description/annotation on a file", {
+registerTool("annotate_file", "Add or update a description/annotation on a file", {
   file_id: z.string().describe("File ID"),
   description: z.string().describe("Description or annotation text"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
@@ -691,7 +777,7 @@ server.tool("annotate_file", "Add or update a description/annotation on a file",
 
 // ─── normalize_source ──────────────────────────────────────────────────────────
 
-server.tool("normalize_source", "Batch-generate canonical names for all files in a source that don't have one", {
+registerTool("normalize_source", "Batch-generate canonical names for all files in a source that don't have one", {
   source_id: z.string().describe("Source ID"),
   agent_id: z.string().optional().describe("Agent ID for activity tracking"),
 }, async ({ source_id, agent_id }) => {
@@ -713,7 +799,7 @@ server.tool("normalize_source", "Batch-generate canonical names for all files in
 
 // ─── Import ──────────────────────────────────────────────────────────────────
 
-server.tool("import_from_url", "Import a file from any URL (iCloud, Google Drive, Azure, Dropbox shared links, etc.)", {
+registerTool("import_from_url", "Import a file from any URL (iCloud, Google Drive, Azure, Dropbox shared links, etc.)", {
   url: z.string().describe("URL to download from"),
   dest_source_id: z.string().describe("Destination source ID (local or S3)"),
   dest_path: z.string().optional().describe("Custom destination path within the source"),
@@ -740,7 +826,7 @@ server.tool("import_from_url", "Import a file from any URL (iCloud, Google Drive
     }
 
     const { writeFileSync, mkdirSync } = await import("fs");
-    const { join: joinPath, dirname, basename: baseName, extname: extName } = await import("path");
+    const { join: joinPath, dirname } = await import("path");
     const body = Buffer.from(await resp.arrayBuffer());
 
     if (source.type === "local") {
@@ -780,7 +866,7 @@ server.tool("import_from_url", "Import a file from any URL (iCloud, Google Drive
   }
 });
 
-server.tool("import_from_local", "Import a file from any local path into a managed source", {
+registerTool("import_from_local", "Import a file from any local path into a managed source", {
   path: z.string().describe("Absolute path to the file (e.g. ~/Downloads/file.pdf, iCloud Drive path, etc.)"),
   dest_source_id: z.string().describe("Destination source ID"),
   dest_path: z.string().optional().describe("Custom path within the source"),
@@ -824,7 +910,7 @@ server.tool("import_from_local", "Import a file from any local path into a manag
   return { content: [{ type: "text" as const, text: `Imported ${fileName} to source ${source.name}` }] };
 });
 
-server.tool("bulk_import", "Import multiple files at once from URLs or local paths", {
+registerTool("bulk_import", "Import multiple files at once from URLs or local paths", {
   items: z.array(z.object({
     url_or_path: z.string().describe("URL or local file path"),
     tags: z.array(z.string()).optional().describe("Per-file tags"),
@@ -893,7 +979,7 @@ server.tool("bulk_import", "Import multiple files at once from URLs or local pat
 
 // ─── QOL Tools ───────────────────────────────────────────────────────────────
 
-server.tool("resolve_id", "Resolve a partial ID to a full ID (prefix matching)", {
+registerTool("resolve_id", "Resolve a partial ID to a full ID (prefix matching)", {
   partial: z.string().describe("Partial ID (e.g. 'f_abc' or 'col_x')"),
   type: z.enum(["files", "sources", "collections", "projects", "tags", "machines"]).describe("Entity type"),
 }, async ({ partial, type }) => {
@@ -907,7 +993,7 @@ server.tool("resolve_id", "Resolve a partial ID to a full ID (prefix matching)",
   }
 });
 
-server.tool("get_file_by_path", "Look up a file by its path within a source", {
+registerTool("get_file_by_path", "Look up a file by its path within a source", {
   source_id: z.string().describe("Source ID"),
   path: z.string().describe("File path relative to source root"),
 }, async ({ source_id, path }) => {
@@ -917,7 +1003,7 @@ server.tool("get_file_by_path", "Look up a file by its path within a source", {
   return { content: [{ type: "text" as const, text: JSON.stringify(full, null, 2) }] };
 });
 
-server.tool("recent_files", "Get files recently touched by agents (read, upload, tag, annotate, etc.)", {
+registerTool("recent_files", "Get files recently touched by agents (read, upload, tag, annotate, etc.)", {
   agent_id: z.string().optional().describe("Filter by agent ID (omit for all agents)"),
   limit: z.number().optional().default(20),
 }, async ({ agent_id, limit }) => {
@@ -933,7 +1019,7 @@ server.tool("recent_files", "Get files recently touched by agents (read, upload,
   return { content: [{ type: "text" as const, text: JSON.stringify(files, null, 2) }] };
 });
 
-server.tool("list_deleted_files", "List soft-deleted files (trash)", {
+registerTool("list_deleted_files", "List soft-deleted files (trash)", {
   source_id: z.string().optional(),
   limit: z.number().optional().default(50),
   offset: z.number().optional().default(0),
@@ -942,7 +1028,7 @@ server.tool("list_deleted_files", "List soft-deleted files (trash)", {
   return { content: [{ type: "text" as const, text: JSON.stringify(files, null, 2) }] };
 });
 
-server.tool("list_conflicts", "List files with sync conflicts", {
+registerTool("list_conflicts", "List files with sync conflicts", {
   source_id: z.string().optional(),
   limit: z.number().optional().default(50),
 }, async ({ source_id, limit }) => {
@@ -957,7 +1043,7 @@ server.tool("list_conflicts", "List files with sync conflicts", {
   return { content: [{ type: "text" as const, text: JSON.stringify(rows, null, 2) }] };
 });
 
-server.tool("resolve_conflict", "Resolve a sync conflict by picking a side", {
+registerTool("resolve_conflict", "Resolve a sync conflict by picking a side", {
   file_id: z.string().describe("File ID with conflict"),
   resolution: z.enum(["keep_local", "keep_remote", "mark_resolved"]).describe("How to resolve"),
 }, async ({ file_id, resolution }) => {
@@ -966,21 +1052,21 @@ server.tool("resolve_conflict", "Resolve a sync conflict by picking a side", {
   return { content: [{ type: "text" as const, text: `Conflict resolved for ${file_id} (${resolution})` }] };
 });
 
-server.tool("purge_deleted", "Permanently remove soft-deleted files from the database", {
+registerTool("purge_deleted", "Permanently remove soft-deleted files from the database", {
   source_id: z.string().optional().describe("Limit to a specific source"),
   older_than: z.string().optional().describe("Only purge files deleted before this date (ISO 8601)"),
 }, async ({ source_id, older_than }) => {
   const { getDb: getPurgeDb } = await import("../db/database.js");
   const db = getPurgeDb();
   const conditions = ["status = 'deleted'"];
-  const params: unknown[] = [];
+  const params: import("bun:sqlite").SQLQueryBindings[] = [];
   if (source_id) { conditions.push("source_id = ?"); params.push(source_id); }
   if (older_than) { conditions.push("indexed_at <= ?"); params.push(older_than); }
   const result = db.run(`DELETE FROM files WHERE ${conditions.join(" AND ")}`, params);
   return { content: [{ type: "text" as const, text: `Purged ${result.changes} deleted file(s)` }] };
 });
 
-server.tool("get_or_create_collection", "Find a collection by name, or create it if it doesn't exist", {
+registerTool("get_or_create_collection", "Find a collection by name, or create it if it doesn't exist", {
   name: z.string(),
   description: z.string().optional().default(""),
 }, async ({ name, description }) => {
@@ -995,7 +1081,7 @@ server.tool("get_or_create_collection", "Find a collection by name, or create it
   return { content: [{ type: "text" as const, text: JSON.stringify(c, null, 2) }] };
 });
 
-server.tool("get_or_create_project", "Find a project by name, or create it if it doesn't exist", {
+registerTool("get_or_create_project", "Find a project by name, or create it if it doesn't exist", {
   name: z.string(),
   description: z.string().optional().default(""),
 }, async ({ name, description }) => {
@@ -1012,7 +1098,7 @@ server.tool("get_or_create_project", "Find a project by name, or create it if it
 
 // ─── Feedback ────────────────────────────────────────────────────────────────
 
-server.tool(
+registerTool(
   "send_feedback",
   "Send feedback about this service",
   {
@@ -1036,7 +1122,7 @@ server.tool(
 
 // ─── Agent Tools ──────────────────────────────────────────────────────────────
 
-server.tool("register_agent", "Register an agent session. Returns agent_id. Auto-triggers a heartbeat.", {
+registerTool("register_agent", "Register an agent session. Returns agent_id. Auto-triggers a heartbeat.", {
   name: z.string(),
   session_id: z.string().optional(),
 }, async (params) => {
@@ -1044,7 +1130,7 @@ server.tool("register_agent", "Register an agent session. Returns agent_id. Auto
   return { content: [{ type: "text" as const, text: JSON.stringify(agent) }] };
 });
 
-server.tool("heartbeat", "Update last_seen_at to signal agent is active.", {
+registerTool("heartbeat", "Update last_seen_at to signal agent is active.", {
   agent_id: z.string(),
 }, async (params) => {
   const agent = updateAgentHeartbeat(params.agent_id);
@@ -1052,7 +1138,7 @@ server.tool("heartbeat", "Update last_seen_at to signal agent is active.", {
   return { content: [{ type: "text" as const, text: JSON.stringify({ agent_id: agent.id, last_seen_at: agent.last_seen_at }) }] };
 });
 
-server.tool("set_focus", "Set active project context for this agent session.", {
+registerTool("set_focus", "Set active project context for this agent session.", {
   agent_id: z.string(),
   project_id: z.string().optional(),
 }, async (params) => {
@@ -1061,13 +1147,13 @@ server.tool("set_focus", "Set active project context for this agent session.", {
   return { content: [{ type: "text" as const, text: JSON.stringify({ agent_id: agent.id, project_id: agent.project_id ?? null }) }] };
 });
 
-server.tool("list_agents", "List all registered agents.", {}, async () => {
+registerTool("list_agents", "List all registered agents.", {}, async () => {
   return { content: [{ type: "text" as const, text: JSON.stringify(listDbAgents()) }] };
 });
 
 // ─── Watcher ──────────────────────────────────────────────────────────────────
 
-server.tool("watch_source", "Start watching a local source for file changes (real-time indexing)", {
+registerTool("watch_source", "Start watching a local source for file changes (real-time indexing)", {
   source_id: z.string().describe("Source ID (must be a local source)"),
 }, async ({ source_id }) => {
   const source = getSource(source_id);
@@ -1079,7 +1165,7 @@ server.tool("watch_source", "Start watching a local source for file changes (rea
   return { content: [{ type: "text" as const, text: `Watching ${source.name} (${source.path})` }] };
 });
 
-server.tool("unwatch_source", "Stop watching a source for file changes", {
+registerTool("unwatch_source", "Stop watching a source for file changes", {
   source_id: z.string().describe("Source ID"),
 }, async ({ source_id }) => {
   const { unwatchSource } = await import("../lib/watcher.js");
@@ -1089,7 +1175,7 @@ server.tool("unwatch_source", "Stop watching a source for file changes", {
 
 // ─── Activity ─────────────────────────────────────────────────────────────────
 
-server.tool("get_file_history", "Get all agent activity for a file", {
+registerTool("get_file_history", "Get all agent activity for a file", {
   file_id: z.string().describe("File ID"),
   after: z.string().optional().describe("Filter: activity after this date (ISO 8601)"),
   before: z.string().optional().describe("Filter: activity before this date (ISO 8601)"),
@@ -1101,7 +1187,7 @@ server.tool("get_file_history", "Get all agent activity for a file", {
   return { content: [{ type: "text" as const, text: JSON.stringify(history, null, 2) }] };
 });
 
-server.tool("get_agent_activity", "Get all activity by a specific agent", {
+registerTool("get_agent_activity", "Get all activity by a specific agent", {
   agent_id: z.string().describe("Agent ID"),
   after: z.string().optional().describe("Filter: activity after this date (ISO 8601)"),
   before: z.string().optional().describe("Filter: activity before this date (ISO 8601)"),
@@ -1113,7 +1199,7 @@ server.tool("get_agent_activity", "Get all activity by a specific agent", {
   return { content: [{ type: "text" as const, text: JSON.stringify(activity, null, 2) }] };
 });
 
-server.tool("get_session_activity", "Get all activity within a session", {
+registerTool("get_session_activity", "Get all activity within a session", {
   session_id: z.string().describe("Session ID"),
   after: z.string().optional().describe("Filter: activity after this date (ISO 8601)"),
   before: z.string().optional().describe("Filter: activity before this date (ISO 8601)"),

@@ -6,11 +6,12 @@ import { tagFile, untagFile, listTags } from "../db/tags.js";
 import { createCollection, listCollections, addToCollection, removeFromCollection } from "../db/collections.js";
 import { createProject, listProjects, addToProject, removeFromProject } from "../db/projects.js";
 import { indexLocalSource } from "../lib/indexer.js";
+import { syncGoogleDriveSource } from "../lib/google-drive.js";
 import { indexS3Source, downloadFromS3 } from "../lib/s3.js";
 import { join } from "path";
 import { homedir } from "os";
 import { createRequire } from "module";
-import type { S3Config } from "../types/index.js";
+import type { GoogleDriveConfig, S3Config, SourceType } from "../types/index.js";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../../package.json") as { version: string };
@@ -49,14 +50,15 @@ export function startServer(port: number): void {
       if (path === "/sources" && method === "POST") {
         const body = await parseBody(req);
         const machine = getCurrentMachine();
+        const type = (body.type as SourceType | undefined) ?? "local";
         const source = createSource({
-          type: (body.type as "local" | "s3") ?? "local",
+          type,
           path: body.path as string | undefined,
           bucket: body.bucket as string | undefined,
           prefix: body.prefix as string | undefined,
           region: body.region as string | undefined,
           name: (body.name as string | undefined) ?? (body.bucket as string) ?? (body.path as string),
-          config: (body.config as S3Config) ?? {},
+          config: (body.config as S3Config | GoogleDriveConfig) ?? {},
           machine_id: machine.id,
         });
         return json(source, 201);
@@ -73,7 +75,9 @@ export function startServer(port: number): void {
         const machine = getCurrentMachine();
         const stats = source.type === "s3"
           ? await indexS3Source(source, machine.id)
-          : await indexLocalSource(source, machine.id);
+          : source.type === "google_drive"
+            ? await syncGoogleDriveSource(source)
+            : await indexLocalSource(source, machine.id);
         return json(stats);
       }
 

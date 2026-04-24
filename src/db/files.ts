@@ -36,15 +36,18 @@ function toFile(row: FileRow): FileRecord {
 
 export function upsertFile(input: Omit<FileRecord, "id" | "indexed_at" | "created_at"> & { id?: string }): FileRecord {
   const db = getDb();
-  const existing = db.query<FileRow, [string, string]>(
+  const existingById = input.id
+    ? db.query<FileRow, [string]>("SELECT * FROM files WHERE id = ?").get(input.id)
+    : null;
+  const existing = existingById ?? db.query<FileRow, [string, string]>(
     "SELECT * FROM files WHERE source_id = ? AND path = ?"
   ).get(input.source_id, input.path);
 
   if (existing) {
     db.run(
-      `UPDATE files SET name=?, ext=?, size=?, mime=?, hash=?, status=?, modified_at=?, indexed_at=datetime('now'), sync_version=sync_version+1
+      `UPDATE files SET source_id=?, machine_id=?, path=?, name=?, ext=?, size=?, mime=?, hash=?, status=?, modified_at=?, indexed_at=datetime('now'), sync_version=sync_version+1
        WHERE id=?`,
-      [input.name, input.ext, input.size, input.mime, input.hash ?? null, input.status, input.modified_at ?? null, existing.id]
+      [input.source_id, input.machine_id, input.path, input.name, input.ext, input.size, input.mime, input.hash ?? null, input.status, input.modified_at ?? null, existing.id]
     );
     // Backfill canonical_name if missing
     if (!existing.canonical_name) {
@@ -156,6 +159,14 @@ export function markFileDeleted(source_id: string, path: string): boolean {
   const result = getDb().run(
     "UPDATE files SET status='deleted', indexed_at=datetime('now') WHERE source_id=? AND path=? AND status='active'",
     [source_id, path]
+  );
+  return result.changes > 0;
+}
+
+export function markFileDeletedById(id: string): boolean {
+  const result = getDb().run(
+    "UPDATE files SET status='deleted', indexed_at=datetime('now') WHERE id=? AND status='active'",
+    [id]
   );
   return result.changes > 0;
 }

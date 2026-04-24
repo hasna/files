@@ -12,6 +12,7 @@ interface GoogleDriveImportedObjectRow {
   source_id: string;
   drive_id: string;
   file_id: string;
+  profile: string | null;
   parent_id: string | null;
   path: string;
   name: string;
@@ -20,6 +21,9 @@ interface GoogleDriveImportedObjectRow {
   modified_at: string | null;
   version: string | null;
   hash: string | null;
+  storage_type: string | null;
+  storage_key: string | null;
+  destination_source_id: string | null;
   s3_key: string;
   file_record_id: string;
   deleted: number;
@@ -40,6 +44,7 @@ function toImportedObject(row: GoogleDriveImportedObjectRow): GoogleDriveImporte
     source_id: row.source_id,
     drive_id: row.drive_id,
     file_id: row.file_id,
+    profile: row.profile ?? undefined,
     parent_id: row.parent_id ?? undefined,
     path: row.path,
     name: row.name,
@@ -48,6 +53,9 @@ function toImportedObject(row: GoogleDriveImportedObjectRow): GoogleDriveImporte
     modified_at: row.modified_at ?? undefined,
     version: row.version ?? undefined,
     hash: row.hash ?? undefined,
+    storage_type: (row.storage_type as "s3" | "local" | null) ?? (row.s3_key ? "s3" : undefined),
+    storage_key: row.storage_key ?? row.s3_key,
+    destination_source_id: row.destination_source_id ?? undefined,
     s3_key: row.s3_key,
     file_record_id: row.file_record_id,
     deleted: row.deleted === 1,
@@ -119,10 +127,12 @@ export function listGoogleDriveImportedObjects(source_id: string): GoogleDriveIm
 export function upsertGoogleDriveImportedObject(input: GoogleDriveImportedObject): GoogleDriveImportedObject {
   getDb().run(
     `INSERT INTO google_drive_imported_objects (
-      source_id, drive_id, file_id, parent_id, path, name, mime, size,
-      modified_at, version, hash, s3_key, file_record_id, deleted, last_imported_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      source_id, drive_id, file_id, profile, parent_id, path, name, mime, size,
+      modified_at, version, hash, storage_type, storage_key, destination_source_id,
+      s3_key, file_record_id, deleted, last_imported_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(source_id, drive_id, file_id) DO UPDATE SET
+      profile = excluded.profile,
       parent_id = excluded.parent_id,
       path = excluded.path,
       name = excluded.name,
@@ -131,6 +141,9 @@ export function upsertGoogleDriveImportedObject(input: GoogleDriveImportedObject
       modified_at = excluded.modified_at,
       version = excluded.version,
       hash = excluded.hash,
+      storage_type = excluded.storage_type,
+      storage_key = excluded.storage_key,
+      destination_source_id = excluded.destination_source_id,
       s3_key = excluded.s3_key,
       file_record_id = excluded.file_record_id,
       deleted = excluded.deleted,
@@ -139,6 +152,7 @@ export function upsertGoogleDriveImportedObject(input: GoogleDriveImportedObject
       input.source_id,
       input.drive_id,
       input.file_id,
+      input.profile ?? null,
       input.parent_id ?? null,
       input.path,
       input.name,
@@ -147,7 +161,10 @@ export function upsertGoogleDriveImportedObject(input: GoogleDriveImportedObject
       input.modified_at ?? null,
       input.version ?? null,
       input.hash ?? null,
-      input.s3_key,
+      input.storage_type ?? (input.s3_key ? "s3" : null),
+      input.storage_key ?? input.s3_key ?? null,
+      input.destination_source_id ?? null,
+      input.s3_key ?? input.storage_key ?? "",
       input.file_record_id,
       input.deleted ? 1 : 0,
       input.last_imported_at,

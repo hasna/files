@@ -3,8 +3,8 @@ export interface Machine {
   is_current: boolean; last_seen: string; created_at: string;
 }
 export interface Source {
-  id: string; name: string; type: "local" | "s3"; path?: string; bucket?: string;
-  prefix?: string; region?: string; enabled: boolean; file_count: number;
+  id: string; name: string; type: "local" | "s3" | "google_drive"; path?: string; bucket?: string;
+  prefix?: string; region?: string; config?: { profile?: string }; enabled: boolean; file_count: number;
   last_indexed_at?: string; machine_id: string; created_at: string;
 }
 export interface FileRecord {

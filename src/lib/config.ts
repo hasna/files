@@ -26,6 +26,7 @@ export interface FilesConfig {
   hash_skip_bytes: number;        // skip hashing files larger than this (0 = always hash)
   default_limit: number;
   ignore_patterns: string[];      // global ignore patterns applied to all local sources
+  google_drive_default_destination_source_id: string; // empty = auto-pick the first enabled S3 source
   [key: string]: unknown;
 }
 
@@ -34,6 +35,7 @@ const DEFAULTS: FilesConfig = {
   hash_skip_bytes: 0,
   default_limit: 50,
   ignore_patterns: [],
+  google_drive_default_destination_source_id: "",
 };
 
 export function loadConfig(): FilesConfig {
